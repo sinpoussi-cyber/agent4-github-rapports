@@ -1,0 +1,335 @@
+name: Agent 4 — GitHub Rapports Word
+
+on:
+  schedule:
+    - cron: '0 6 * * *'    # collect       — tous les jours à 6h UTC
+    - cron: '0 20 * * *'   # rapport-jour  — tous les jours à 20h UTC
+    - cron: '0 7 * * 1'    # rapport-hebdo  — tous les lundis à 7h UTC
+    - cron: '0 7 1 * *'    # rapport-mensuel — le 1er du mois à 7h UTC
+    - cron: '0 8 1 1 *'    # rapport-annuel  — le 1er janvier à 8h UTC
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode à exécuter manuellement'
+        required: true
+        default: 'collect'
+        type: choice
+        options:
+          - collect
+          - rapport-jour
+          - rapport-hebdo
+          - rapport-mensuel
+          - rapport-annuel
+
+env:
+  ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+  GMAIL_CLIENT_ID:        ${{ secrets.GMAIL_CLIENT_ID }}
+  GMAIL_CLIENT_SECRET:    ${{ secrets.GMAIL_CLIENT_SECRET }}
+  GMAIL_REFRESH_TOKEN:    ${{ secrets.GMAIL_REFRESH_TOKEN }}
+  REPORT_EMAIL_FROM:      ${{ secrets.REPORT_EMAIL_FROM }}
+  REPORT_EMAIL_TO:        ${{ secrets.REPORT_EMAIL_TO }}
+  GITHUB_TOKEN_PAT:       ${{ secrets.GITHUB_TOKEN_PAT }}
+  GITHUB_REPO:            ${{ secrets.GITHUB_REPO }}
+
+jobs:
+
+  # ── COLLECT — tous les jours à 6h UTC ──────────────────────────────────────
+  collect:
+    name: Collect — Téléchargement et analyse des rapports
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'collect'
+      || github.event_name == 'schedule' && github.event.schedule == '0 6 * * *'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            requests \
+            python-docx \
+            "anthropic==0.49.0" \
+            python-dotenv \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            PyGithub \
+            "httpx==0.27.0" \
+            "httpcore==1.0.9"
+
+      - name: Créer token.json depuis le secret
+        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
+
+      - name: Créer .env
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
+          REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN_PAT }}
+          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          EOF
+
+      - name: Exécuter collect
+        run: python main.py collect
+
+      - name: Sauvegarder last_comparison.json comme artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: last-comparison
+          path: last_comparison.json
+          retention-days: 7
+
+  # ── RAPPORT JOUR — tous les jours à 20h UTC ────────────────────────────────
+  rapport-jour:
+    name: Rapport Quotidien — Envoi email
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rapport-jour'
+      || github.event_name == 'schedule' && github.event.schedule == '0 20 * * *'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            requests \
+            python-docx \
+            "anthropic==0.49.0" \
+            python-dotenv \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            PyGithub \
+            "httpx==0.27.0" \
+            "httpcore==1.0.9"
+
+      - name: Créer token.json depuis le secret
+        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
+
+      - name: Créer .env
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
+          REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN_PAT }}
+          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          EOF
+
+      - name: Télécharger last_comparison.json depuis l'artefact
+        uses: actions/download-artifact@v4
+        with:
+          name: last-comparison
+        continue-on-error: true
+
+      - name: Fallback — recollect si artefact absent
+        run: |
+          if [ ! -f last_comparison.json ]; then
+            echo "Artefact absent, lancement du collect..."
+            python main.py collect
+          fi
+
+      - name: Envoyer le rapport quotidien
+        run: python main.py rapport-jour
+
+  # ── RAPPORT HEBDO — tous les lundis à 7h UTC ───────────────────────────────
+  rapport-hebdo:
+    name: Rapport Hebdomadaire — Envoi email
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rapport-hebdo'
+      || github.event_name == 'schedule' && github.event.schedule == '0 7 * * 1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            requests \
+            python-docx \
+            "anthropic==0.49.0" \
+            python-dotenv \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            PyGithub \
+            "httpx==0.27.0" \
+            "httpcore==1.0.9"
+
+      - name: Créer token.json depuis le secret
+        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
+
+      - name: Créer .env
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
+          REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN_PAT }}
+          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          EOF
+
+      - name: Télécharger last_comparison.json depuis l'artefact
+        uses: actions/download-artifact@v4
+        with:
+          name: last-comparison
+        continue-on-error: true
+
+      - name: Fallback — recollect si artefact absent
+        run: |
+          if [ ! -f last_comparison.json ]; then
+            echo "Artefact absent, lancement du collect..."
+            python main.py collect
+          fi
+
+      - name: Envoyer le rapport hebdomadaire
+        run: python main.py rapport-hebdo
+
+  # ── RAPPORT MENSUEL — le 1er du mois à 7h UTC ─────────────────────────────
+  rapport-mensuel:
+    name: Rapport Mensuel — Envoi email
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rapport-mensuel'
+      || github.event_name == 'schedule' && github.event.schedule == '0 7 1 * *'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            requests \
+            python-docx \
+            "anthropic==0.49.0" \
+            python-dotenv \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            PyGithub \
+            "httpx==0.27.0" \
+            "httpcore==1.0.9"
+
+      - name: Créer token.json depuis le secret
+        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
+
+      - name: Créer .env
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
+          REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN_PAT }}
+          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          EOF
+
+      - name: Télécharger last_comparison.json depuis l'artefact
+        uses: actions/download-artifact@v4
+        with:
+          name: last-comparison
+        continue-on-error: true
+
+      - name: Fallback — recollect si artefact absent
+        run: |
+          if [ ! -f last_comparison.json ]; then
+            echo "Artefact absent, lancement du collect..."
+            python main.py collect
+          fi
+
+      - name: Envoyer le rapport mensuel
+        run: python main.py rapport-mensuel
+
+  # ── RAPPORT ANNUEL — le 1er janvier à 8h UTC ──────────────────────────────
+  rapport-annuel:
+    name: Rapport Annuel — Envoi email
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rapport-annuel'
+      || github.event_name == 'schedule' && github.event.schedule == '0 8 1 1 *'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            requests \
+            python-docx \
+            "anthropic==0.49.0" \
+            python-dotenv \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            PyGithub \
+            "httpx==0.27.0" \
+            "httpcore==1.0.9"
+
+      - name: Créer token.json depuis le secret
+        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
+
+      - name: Créer .env
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
+          REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          GITHUB_TOKEN_PAT=${{ secrets.GITHUB_TOKEN_PAT }}
+          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          EOF
+
+      - name: Envoyer le rapport annuel
+        run: python main.py rapport-annuel
