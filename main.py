@@ -14,7 +14,7 @@ from email_sender import send_report
 
 load_dotenv()
 
-GITHUB_REPO = os.getenv("GITHUB_REPO", "sinpoussi/mon-repo")
+GH_REPO = os.getenv("GH_REPO", "sinpoussi/mon-repo")
 COMPARISON_FILE = "last_comparison.json"
 
 
@@ -36,8 +36,8 @@ def _default(obj):
 def cmd_collect():
     log("=== MODE COLLECT ===")
 
-    log(f"Téléchargement des 2 derniers rapports Word depuis '{GITHUB_REPO}'...")
-    rapports = get_latest_word_reports(repo_name=GITHUB_REPO, n=2)
+    log(f"Téléchargement des 2 derniers rapports Word depuis '{GH_REPO}'...")
+    rapports = get_latest_word_reports(repo_name=GH_REPO, n=2)
 
     if len(rapports) < 2:
         log(f"ERREUR : {len(rapports)} rapport(s) trouvé(s), 2 requis. Abandon.")
@@ -84,7 +84,7 @@ def cmd_rapport_annuel():
     log(f"=== MODE RAPPORT-ANNUEL — {year} ===")
 
     log(f"Téléchargement de tous les artefacts de l'année {year}...")
-    rapports = get_year_word_reports(year=year, repo_name=GITHUB_REPO)
+    rapports = get_year_word_reports(year=year, repo_name=GH_REPO)
 
     if len(rapports) < 2:
         log(f"ERREUR : {len(rapports)} rapport(s) trouvé(s) pour {year}, 2 requis. Abandon.")

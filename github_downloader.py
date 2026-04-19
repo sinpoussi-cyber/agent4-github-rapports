@@ -8,8 +8,8 @@ from github import Github, GithubException
 
 load_dotenv()
 
-GITHUB_TOKEN_PAT = os.getenv("GITHUB_TOKEN_PAT")
-GITHUB_REPO = os.getenv("GITHUB_REPO")
+GH_TOKEN_PAT = os.getenv("GH_TOKEN_PAT")
+GH_REPO = os.getenv("GH_REPO")
 
 
 def get_year_word_reports(year=None, repo_name=None, token=None):
@@ -21,14 +21,14 @@ def get_year_word_reports(year=None, repo_name=None, token=None):
     """
     from datetime import datetime, timezone as tz
 
-    _token = token or GITHUB_TOKEN_PAT
-    _repo_name = repo_name or GITHUB_REPO
+    _token = token or GH_TOKEN_PAT
+    _repo_name = repo_name or GH_REPO
     _year = year or datetime.now(tz.utc).year
 
     if not _token:
-        raise ValueError("GITHUB_TOKEN_PAT manquant (paramètre ou .env)")
+        raise ValueError("GH_TOKEN_PAT manquant (paramètre ou .env)")
     if not _repo_name:
-        raise ValueError("GITHUB_REPO manquant (paramètre ou .env)")
+        raise ValueError("GH_REPO manquant (paramètre ou .env)")
 
     headers = {"Authorization": f"token {_token}"}
     reports = []
@@ -93,13 +93,13 @@ def get_latest_word_reports(repo_name=None, token=None, n=2):
     Retourne une liste de dicts :
         {nom, contenu_bytes, date_run, run_number}
     """
-    _token = token or GITHUB_TOKEN_PAT
-    _repo_name = repo_name or GITHUB_REPO
+    _token = token or GH_TOKEN_PAT
+    _repo_name = repo_name or GH_REPO
 
     if not _token:
-        raise ValueError("GITHUB_TOKEN_PAT manquant (paramètre ou .env)")
+        raise ValueError("GH_TOKEN_PAT manquant (paramètre ou .env)")
     if not _repo_name:
-        raise ValueError("GITHUB_REPO manquant (paramètre ou .env)")
+        raise ValueError("GH_REPO manquant (paramètre ou .env)")
 
     headers = {"Authorization": f"token {_token}"}
     reports = []

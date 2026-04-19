@@ -28,8 +28,8 @@ env:
   GMAIL_REFRESH_TOKEN:    ${{ secrets.GMAIL_REFRESH_TOKEN }}
   REPORT_EMAIL_FROM:      ${{ secrets.REPORT_EMAIL_FROM }}
   REPORT_EMAIL_TO:        ${{ secrets.REPORT_EMAIL_TO }}
-  GITHUB_TOKEN_PAT:       ${{ secrets.GITHUB_TOKEN_PAT }}
-  GITHUB_REPO:            ${{ secrets.GITHUB_REPO }}
+  GH_TOKEN_PAT:       ${{ secrets.GH_TOKEN_PAT }}
+  GH_REPO:            ${{ secrets.GH_REPO }}
 
 jobs:
 
@@ -77,8 +77,8 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
-          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN_PAT }}
-          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
+          GH_REPO=${{ secrets.GH_REPO }}
           EOF
 
       - name: Exécuter collect
@@ -135,8 +135,8 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
-          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN_PAT }}
-          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
+          GH_REPO=${{ secrets.GH_REPO }}
           EOF
 
       - name: Télécharger last_comparison.json depuis l'artefact
@@ -199,8 +199,8 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
-          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN_PAT }}
-          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
+          GH_REPO=${{ secrets.GH_REPO }}
           EOF
 
       - name: Télécharger last_comparison.json depuis l'artefact
@@ -263,8 +263,8 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
-          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN_PAT }}
-          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
+          GH_REPO=${{ secrets.GH_REPO }}
           EOF
 
       - name: Télécharger last_comparison.json depuis l'artefact
@@ -327,8 +327,8 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
-          GITHUB_TOKEN_PAT=${{ secrets.GITHUB_TOKEN_PAT }}
-          GITHUB_REPO=${{ secrets.GITHUB_REPO }}
+          GH_TOKEN_PAT=${{ secrets.GH_TOKEN_PAT }}
+          GH_REPO=${{ secrets.GH_REPO }}
           EOF
 
       - name: Envoyer le rapport annuel
