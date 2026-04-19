@@ -79,6 +79,35 @@ def cmd_collect():
         json.dump(payload, f, ensure_ascii=False, indent=2, default=_default)
     log(f"Résultat sauvegardé dans '{COMPARISON_FILE}'.")
 
+    subject = f"📊 Agent 4 BRVM — Comparaison rapports — {datetime.now().strftime('%d/%m/%Y')}"
+    html = f"""
+<html><body style="font-family:Arial;max-width:800px;margin:auto">
+<h2 style="color:#2E86AB">📊 Rapport de comparaison BRVM</h2>
+<p><b>Document 1 :</b> {doc1['nom']} ({doc1['date_run']})</p>
+<p><b>Document 2 :</b> {doc2['nom']} ({doc2['date_run']})</p>
+<hr>
+<h3>Résultats</h3>
+<p><b>Taux de changement :</b> {diff_data['taux_changement']}%</p>
+<p><b>Score d'importance :</b> {analysis.get('score_importance', 'N/A')}/10</p>
+<p><b>Alerte :</b> {'🔴 OUI' if analysis.get('alerte') else '🟢 NON'}</p>
+<hr>
+<h3>Résumé exécutif</h3>
+<p>{analysis.get('resume_executif', '')}</p>
+<h3>Changements importants</h3>
+<ul>{''.join(f"<li>{c}</li>" for c in analysis.get('changements_importants', []))}</ul>
+<h3>Interprétation business</h3>
+<p>{analysis.get('interpretation', '')}</p>
+<hr>
+<p style="color:grey;font-size:12px">Agent 4 — Système automatisé BRVM</p>
+</body></html>
+"""
+    log("Envoi de l'email de collecte...")
+    ok = send_report(subject, html)
+    if ok:
+        log("Email de collecte envoyé avec succès.")
+    else:
+        log("AVERTISSEMENT : échec de l'envoi de l'email de collecte.")
+
 
 def cmd_rapport_annuel():
     year = datetime.now(timezone.utc).year

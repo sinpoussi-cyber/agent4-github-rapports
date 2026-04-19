@@ -28,8 +28,11 @@ env:
   GMAIL_REFRESH_TOKEN:    ${{ secrets.GMAIL_REFRESH_TOKEN }}
   REPORT_EMAIL_FROM:      ${{ secrets.REPORT_EMAIL_FROM }}
   REPORT_EMAIL_TO:        ${{ secrets.REPORT_EMAIL_TO }}
-  GH_TOKEN_PAT:       ${{ secrets.GH_TOKEN_PAT }}
-  GH_REPO:            ${{ secrets.GH_REPO }}
+  SMTP_SERVER:            ${{ secrets.SMTP_SERVER }}
+  SMTP_PORT:              ${{ secrets.SMTP_PORT }}
+  SMTP_PASSWORD:          ${{ secrets.SMTP_PASSWORD }}
+  GH_TOKEN_PAT:           ${{ secrets.GH_TOKEN_PAT }}
+  GH_REPO:                ${{ secrets.GH_REPO }}
 
 jobs:
 
@@ -77,6 +80,9 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
           GH_REPO=${{ secrets.GH_REPO }}
           EOF
@@ -135,6 +141,9 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
           GH_REPO=${{ secrets.GH_REPO }}
           EOF
@@ -199,6 +208,9 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
           GH_REPO=${{ secrets.GH_REPO }}
           EOF
@@ -263,6 +275,9 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
           GH_REPO=${{ secrets.GH_REPO }}
           EOF
@@ -327,6 +342,9 @@ jobs:
           GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
           REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           GH_TOKEN_PAT=${{ secrets.GH_TOKEN_PAT }}
           GH_REPO=${{ secrets.GH_REPO }}
           EOF
