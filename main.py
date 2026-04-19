@@ -44,8 +44,9 @@ def cmd_collect():
         sys.exit(1)
 
     doc1, doc2 = rapports[0], rapports[1]
-    log(f"Document 1 : {doc1['nom']} ({doc1['date_commit']})")
-    log(f"Document 2 : {doc2['nom']} ({doc2['date_commit']})")
+    log(f"Clés disponibles : {list(doc1.keys())}")
+    log(f"Document 1 : {doc1['nom']} ({doc1['date_run']})")
+    log(f"Document 2 : {doc2['nom']} ({doc2['date_run']})")
 
     log("Comparaison des documents...")
     diff_data = compare_documents(doc1["contenu_bytes"], doc2["contenu_bytes"])
