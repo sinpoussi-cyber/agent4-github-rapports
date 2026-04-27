@@ -284,10 +284,38 @@ def _sl(data, key):
     return v if isinstance(v, list) else []
 
 
+def _get_score(item) -> str:
+    """Retourne le meilleur score disponible ou 'N/D'."""
+    for key in ("score", "score_composite", "score_technique"):
+        v = item.get(key)
+        if v is not None:
+            return str(v)
+    return "N/D"
+
+
+def _get_score_float(item) -> float:
+    """Retourne le score numérique pour le tri."""
+    for key in ("score", "score_composite", "score_technique"):
+        v = item.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                pass
+    return 0.0
+
+
 # ── Pages ─────────────────────────────────────────────────────────────────────
 
 def _page1(doc, d, date_str):
-    _heading(doc, "PAGE 1 — NOTE DE SYNTHÈSE & ÉTAT DU MARCHÉ")
+    # ── En-tête unique — apparaît une seule fois avant la première section ───
+    p_hdr = doc.add_paragraph()
+    p_hdr.paragraph_format.space_before = Pt(0)
+    p_hdr.paragraph_format.space_after = Pt(6)
+    _bold(p_hdr, _DESTINATAIRE + "\n", 10)
+    _normal(p_hdr, f"Date : {date_str}    |    {_IA_MENTION}", 9)
+
+    _heading(doc, "NOTE DE SYNTHÈSE & ÉTAT DU MARCHÉ")
 
     # Bloc période (multi-périodes uniquement)
     pi = d.get("_period_info")
@@ -304,33 +332,37 @@ def _page1(doc, d, date_str):
             "283593",
         )
 
-    p = doc.add_paragraph()
-    _bold(p, _DESTINATAIRE + "\n", 10)
-    _normal(p, f"Date : {date_str}    |    {_IA_MENTION}", 9)
-
     _heading(doc, "Résumé exécutif", 2)
-    tbl = doc.add_table(rows=4, cols=2)
-    tbl.style = "Table Grid"
-    rows_data = [
-        ("Sentiment marché", _s(d, "sentiment")),
-        ("BRVM Composite", f"{_s(d, 'brvm_composite')}  ({_s(d, 'brvm_variation')})"),
-        ("Capitalisation", _s(d, "capitalisation")),
-        (f"Signaux : {_s(d, 'nb_achat', 0)} ACHAT  /  {_s(d, 'nb_neutre', 0)} NEUTRE  /  {_s(d, 'nb_vente', 0)} VENTE", ""),
-    ]
-    for i, (label, val) in enumerate(rows_data):
-        tbl.rows[i].cells[0].text = label
-        tbl.rows[i].cells[1].text = str(val)
-        _cell_bg(tbl.rows[i].cells[0], "EBF0FA")
+    sentiment = _s(d, "sentiment")
+    brvm_composite = _s(d, "brvm_composite")
+    brvm_variation = _s(d, "brvm_variation")
+    capitalisation = _s(d, "capitalisation")
+    nb_achat = _s(d, "nb_achat", 0)
+    nb_neutre = _s(d, "nb_neutre", 0)
+    nb_vente = _s(d, "nb_vente", 0)
+    top_opp = _s(d, "top_opportunite")
+    principale_div = _s(d, "principale_divergence")
+    perf_hist = _s(d, "perf_historique_100j")
+    nb_div = len(_sl(d, "divergences"))
 
-    doc.add_paragraph()
-    for label, key in [
-        ("Top opportunité du jour", "top_opportunite"),
-        ("Principale divergence", "principale_divergence"),
-        ("Performance historique 100 jours", "perf_historique_100j"),
-    ]:
-        p = doc.add_paragraph()
-        _bold(p, f"{label} : ", 10)
-        _normal(p, _s(d, key), 10)
+    narrative = (
+        f"Le marché BRVM affiche un sentiment {sentiment}. "
+        f"Le BRVM Composite s'établit à {brvm_composite} ({brvm_variation}) "
+        f"avec une capitalisation de {capitalisation}. "
+        f"On note {nb_achat} signaux d'ACHAT, {nb_neutre} NEUTRE et {nb_vente} VENTE. "
+        f"La top opportunité du jour est {top_opp}. "
+    )
+    if nb_div:
+        narrative += (
+            f"{nb_div} sociétés présentent des divergences entre signaux "
+            f"techniques et fondamentaux. "
+        )
+    if principale_div != "—":
+        narrative += f"Principale divergence : {principale_div}. "
+    narrative += f"La performance historique sur 100 jours est de {perf_hist}."
+
+    p = doc.add_paragraph()
+    _normal(p, narrative, 10)
 
     _heading(doc, "3 Risques majeurs", 2)
     for r in _sl(d, "risques")[:3]:
@@ -342,8 +374,7 @@ def _page1(doc, d, date_str):
 
 
 def _page2(doc, d):
-    doc.add_page_break()
-    _heading(doc, "PAGE 2 — SYNTHÈSE GÉNÉRALE & ANALYSE SECTORIELLE")
+    _heading(doc, "SYNTHÈSE GÉNÉRALE & ANALYSE SECTORIELLE")
 
     for label, key in [
         ("BRVM Composite sur 100 jours", "brvm_composite_100j"),
@@ -367,7 +398,7 @@ def _page2(doc, d):
                 row = tbl.add_row()
                 reco = str(item.get("reco", "NEUTRE"))
                 row.cells[0].text = str(item.get("symbole", "—"))
-                row.cells[1].text = str(item.get("score", "—"))
+                row.cells[1].text = _get_score(item)
                 row.cells[2].text = reco
                 _cell_bg(row.cells[2], _reco_color(reco))
         doc.add_paragraph()
@@ -400,8 +431,7 @@ def _page2(doc, d):
 
 
 def _page3(doc, d):
-    doc.add_page_break()
-    _heading(doc, "PAGE 3 — ANALYSE MACRO INTERNATIONALE")
+    _heading(doc, "ANALYSE MACRO INTERNATIONALE")
 
     for label, key in [
         ("Contexte international", "macro_international"),
@@ -413,7 +443,7 @@ def _page3(doc, d):
     ]:
         p = doc.add_paragraph()
         _bold(p, f"{label} : ", 10)
-        _normal(p, _s(d, key), 10)
+        _normal(p, _s(d, key, "Données non disponibles"), 10)
 
     _heading(doc, "Sources & Niveau d'alerte", 2)
     sources = _sl(d, "sources_macro")
@@ -432,8 +462,7 @@ def _page3(doc, d):
 
 
 def _page4(doc, d):
-    doc.add_page_break()
-    _heading(doc, "PAGE 4 — ACTUALITÉS DU MARCHÉ BRVM")
+    _heading(doc, "ACTUALITÉS DU MARCHÉ BRVM")
 
     _heading(doc, "A — Documents officiels (AG, dividendes, convocations, résultats)", 2)
     docs = _sl(d, "documents_officiels")
@@ -443,10 +472,10 @@ def _page4(doc, d):
         _tbl_header(tbl, ["Type", "Société", "Date", "Détail"], "1A73E8", "FFFFFF")
         for item in docs:
             row = tbl.add_row()
-            row.cells[0].text = str(item.get("type", "—"))
-            row.cells[1].text = str(item.get("societe", "—"))
-            row.cells[2].text = str(item.get("date", "—"))
-            row.cells[3].text = str(item.get("detail", "—"))
+            row.cells[0].text = str(item.get("type") or "—")
+            row.cells[1].text = str(item.get("societe") or "—")
+            row.cells[2].text = str(item.get("date") or "—")
+            row.cells[3].text = str(item.get("detail") or "—")
             _cell_bg(row.cells[0], "E8F0FE")
     else:
         doc.add_paragraph("Aucun document officiel recensé.")
@@ -472,8 +501,7 @@ def _page4(doc, d):
 
 
 def _page5(doc, d):
-    doc.add_page_break()
-    _heading(doc, "PAGE 5 — MATRICE RISQUES & LIQUIDITÉ")
+    _heading(doc, "MATRICE RISQUES & LIQUIDITÉ")
 
     _heading(doc, "Analyse liquidité", 2)
     _bold(doc.add_paragraph(), "Haute liquidité :", 10)
@@ -514,19 +542,14 @@ def _page5(doc, d):
 
 
 def _page6(doc, d):
-    doc.add_page_break()
-    _heading(doc, "PAGE 6 — CLASSEMENT 47 SOCIÉTÉS /100")
+    _heading(doc, "CLASSEMENT 47 SOCIÉTÉS /100")
 
     classement = _sl(d, "classement_47")
     if not classement:
         doc.add_paragraph("Données de classement non disponibles dans le rapport source.")
         return
 
-    classement_sorted = sorted(
-        classement,
-        key=lambda x: float(x.get("score", 0) or 0),
-        reverse=True,
-    )
+    classement_sorted = sorted(classement, key=_get_score_float, reverse=True)
 
     tbl = doc.add_table(rows=1, cols=7)
     tbl.style = "Table Grid"
@@ -534,15 +557,15 @@ def _page6(doc, d):
 
     for item in classement_sorted:
         row = tbl.add_row()
-        score = float(item.get("score", 0) or 0)
+        score = _get_score_float(item)
         reco = str(item.get("reco", "NEUTRE")).upper()
         values = [
-            str(item.get("symbole", "—")),
-            str(item.get("secteur", "—")),
-            str(item.get("prix", "—")),
-            str(item.get("score", "—")),
-            str(item.get("signal_tech", "—")),
-            str(item.get("signal_fond", "—")),
+            str(item.get("symbole") or "—"),
+            str(item.get("secteur") or "—"),
+            str(item.get("prix") or "—"),
+            _get_score(item),
+            str(item.get("signal_tech") or "—"),
+            str(item.get("signal_fond") or "—"),
             reco,
         ]
         for i, v in enumerate(values):
@@ -555,8 +578,7 @@ def _page6(doc, d):
 
 
 def _page7(doc, d):
-    doc.add_page_break()
-    _heading(doc, "PAGE 7 — PORTEFEUILLES MODÈLES")
+    _heading(doc, "PORTEFEUILLES MODÈLES")
 
     configs = [
         ("🔵 Portefeuille Défensif", "portefeuille_defensif", "Faible risque · Haute liquidité · ~15% cash", "BDE9F7"),
@@ -579,7 +601,8 @@ def _page7(doc, d):
             for item in items:
                 row = tbl.add_row()
                 row.cells[0].text = str(item.get("symbole", "—"))
-                row.cells[1].text = f"{item.get('poids', '—')}%"
+                poids = item.get("poids")
+                row.cells[1].text = f"{poids}%" if poids is not None else "N/D"
                 if str(item.get("symbole", "")).upper() == "CASH":
                     _cell_bg(row.cells[0], "F5F5F5")
                     _cell_bg(row.cells[1], "F5F5F5")
@@ -587,8 +610,7 @@ def _page7(doc, d):
 
 
 def _page8(doc, d, date_str):
-    doc.add_page_break()
-    _heading(doc, "PAGE 8 — ALERTES DU JOUR & RECOMMANDATIONS")
+    _heading(doc, "ALERTES DU JOUR & RECOMMANDATIONS")
 
     for title, key, prefix in [
         ("RSI Surachat (> 70)", "rsi_surachat", "⚠️"),
