@@ -1,5 +1,7 @@
 import argparse
 import base64
+import copy
+import io
 import json
 import os
 import sys
@@ -108,6 +110,33 @@ def _note_fiches_html(freq: str, pi: dict, nb_rapports: int, nb_fiches: int) -> 
     </div>
   </div>
 </body></html>"""
+
+
+# ── Fusion de plusieurs .docx en un seul ─────────────────────────────────────
+
+def _merge_docx(docs_bytes_list: list) -> bytes:
+    from docx import Document
+    merged = Document()
+    for p in list(merged.paragraphs):
+        p._element.getparent().remove(p._element)
+    for i, doc_bytes in enumerate(docs_bytes_list):
+        src = Document(io.BytesIO(doc_bytes))
+        if i > 0:
+            pb = src.element.body.__class__()
+            from docx.oxml import OxmlElement
+            from docx.oxml.ns import qn
+            br_p = OxmlElement("w:p")
+            br_r = OxmlElement("w:r")
+            br = OxmlElement("w:br")
+            br.set(qn("w:type"), "page")
+            br_r.append(br)
+            br_p.append(br_r)
+            merged.element.body.append(br_p)
+        for element in src.element.body:
+            merged.element.body.append(copy.deepcopy(element))
+    buf = io.BytesIO()
+    merged.save(buf)
+    return buf.getvalue()
 
 
 # ── Sérialisation JSON (datetime → str) ─────────────────────────────────────
@@ -238,11 +267,13 @@ def cmd_rapport(type_rapport):
         doc1_b64 = payload.get("doc1_bytes_b64")
         if doc1_b64:
             doc1_bytes = base64.b64decode(doc1_b64)
+            today_str = date.today().strftime("%Y%m%d")
             pi_jour = _period_info("JOUR", [])
 
             log("Génération de la Note Stratégique BRVM (JOUR)...")
             try:
-                note_filename, note_bytes = generate_note([doc1_bytes], "JOUR", pi_jour)
+                _, note_bytes = generate_note([doc1_bytes], "JOUR", pi_jour)
+                note_filename = f"Note_Strategique_BRVM_JOUR_{today_str}.docx"
                 attachments.append({"filename": note_filename, "data": note_bytes})
                 log(f"Note Stratégique générée : {note_filename}")
             except Exception as e:
@@ -251,9 +282,14 @@ def cmd_rapport(type_rapport):
             log("Génération des fiches sociétés (JOUR)...")
             try:
                 fiches = generate_fiches([doc1_bytes], "JOUR", pi_jour)
-                for fname, fbytes in fiches:
-                    attachments.append({"filename": fname, "data": fbytes})
-                log(f"{len(fiches)} fiche(s) société générée(s).")
+                if fiches:
+                    fiches_filename = f"Fiches_Societes_{today_str}.docx"
+                    fiches_bytes = (
+                        fiches[0][1] if len(fiches) == 1
+                        else _merge_docx([fbytes for _, fbytes in fiches])
+                    )
+                    attachments.append({"filename": fiches_filename, "data": fiches_bytes})
+                    log(f"{len(fiches)} fiche(s) société fusionnée(s) → {fiches_filename}")
             except Exception as e:
                 log(f"AVERTISSEMENT : échec fiches sociétés : {e}")
         else:

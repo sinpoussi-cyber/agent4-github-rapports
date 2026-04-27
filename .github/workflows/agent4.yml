@@ -3,14 +3,14 @@ name: Agent 4 — GitHub Rapports Word
 on:
   schedule:
     - cron: '0 6 * * *'          # collect            — tous les jours à 6h UTC
-    - cron: '0 20 * * *'         # rapport-jour        — tous les jours à 20h UTC
+    - cron: '0 7 * * *'          # rapport-jour        — tous les jours à 7h UTC (9h Abidjan)
     - cron: '0 7 * * 1'          # rapport-hebdo       — tous les lundis à 7h UTC
     - cron: '0 7 1 * *'          # rapport-mensuel     — le 1er du mois à 7h UTC
     - cron: '0 8 1 1 *'          # rapport-annuel      — le 1er janvier à 8h UTC
-    - cron: '0 20 * * 1'         # note-fiches-hebdo   — tous les lundis à 20h UTC
-    - cron: '0 20 1 * *'         # note-fiches-mensuel — le 1er du mois à 20h UTC
-    - cron: '0 20 1 1,4,7,10 *'  # note-fiches-trim    — 1er jan/avr/jul/oct à 20h UTC
-    - cron: '0 21 1 1 *'         # note-fiches-annuel  — le 1er janvier à 21h UTC
+    - cron: '0 7 * * 1'          # note-fiches-hebdo   — tous les lundis à 7h UTC (9h Abidjan)
+    - cron: '0 7 1 * *'          # note-fiches-mensuel — le 1er du mois à 7h UTC (9h Abidjan)
+    - cron: '0 7 1 1,4,7,10 *'   # note-fiches-trim    — 1er jan/avr/jul/oct à 7h UTC (9h Abidjan)
+    - cron: '0 7 1 1 *'          # note-fiches-annuel  — le 1er janvier à 7h UTC (9h Abidjan)
   workflow_dispatch:
     inputs:
       mode:
@@ -111,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'rapport-jour'
-      || github.event_name == 'schedule' && github.event.schedule == '0 20 * * *'
+      || github.event_name == 'schedule' && github.event.schedule == '0 7 * * *'
 
     steps:
       - name: Checkout
@@ -366,7 +366,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-hebdo'
-      || github.event_name == 'schedule' && github.event.schedule == '0 20 * * 1'
+      || github.event_name == 'schedule' && github.event.schedule == '0 7 * * 1'
 
     steps:
       - name: Checkout
@@ -420,7 +420,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-mensuel'
-      || github.event_name == 'schedule' && github.event.schedule == '0 20 1 * *'
+      || github.event_name == 'schedule' && github.event.schedule == '0 7 1 * *'
 
     steps:
       - name: Checkout
@@ -474,7 +474,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-trim'
-      || github.event_name == 'schedule' && github.event.schedule == '0 20 1 1,4,7,10 *'
+      || github.event_name == 'schedule' && github.event.schedule == '0 7 1 1,4,7,10 *'
 
     steps:
       - name: Checkout
@@ -528,7 +528,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-annuel'
-      || github.event_name == 'schedule' && github.event.schedule == '0 21 1 1 *'
+      || github.event_name == 'schedule' && github.event.schedule == '0 7 1 1 *'
 
     steps:
       - name: Checkout
