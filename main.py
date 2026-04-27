@@ -1,8 +1,9 @@
 import argparse
+import base64
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -10,6 +11,8 @@ from github_downloader import get_latest_word_reports, get_year_word_reports
 from word_comparator import compare_documents
 from claude_analyzer import analyze
 from report_generator import generate
+from generate_note_strategique import generate as generate_note
+from generate_fiches_societes import generate as generate_fiches
 from email_sender import send_report
 
 load_dotenv()
@@ -21,6 +24,90 @@ COMPARISON_FILE = "last_comparison.json"
 def log(msg):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"[{ts}] {msg}")
+
+
+# ── Helpers note/fiches ───────────────────────────────────────────────────────
+
+_FREQ_LABELS = {
+    "JOUR": "JOURNALIÈRE",
+    "HEBDO": "HEBDOMADAIRE",
+    "MENSUEL": "MENSUELLE",
+    "TRIM": "TRIMESTRIELLE",
+    "ANNUEL": "ANNUELLE",
+}
+
+
+def _period_info(freq: str, rapports: list) -> dict:
+    """Construit le dict period_info à partir des rapports téléchargés."""
+    today = date.today()
+    run_dates = []
+    for r in rapports:
+        d_run = r.get("date_run")
+        if d_run:
+            run_dates.append(d_run.date() if hasattr(d_run, "date") else d_run)
+    date_debut = min(run_dates).strftime("%d/%m/%Y") if run_dates else today.strftime("%d/%m/%Y")
+    date_fin = max(run_dates).strftime("%d/%m/%Y") if run_dates else today.strftime("%d/%m/%Y")
+    month = today.month
+    return {
+        "date_debut": date_debut,
+        "date_fin": date_fin,
+        "nb_seances": len(rapports) if rapports else 1,
+        "freq_label": _FREQ_LABELS.get(freq, freq),
+        "annee": today.year,
+        "semaine": today.isocalendar()[1],
+        "trimestre": (month - 1) // 3 + 1,
+        "mois": today.strftime("%B %Y"),
+    }
+
+
+def _note_fiches_subject(freq: str, pi: dict) -> str:
+    today = date.today()
+    if freq == "HEBDO":
+        return f"Synthèse Hebdomadaire BRVM — Semaine {pi.get('semaine', today.isocalendar()[1])}"
+    if freq == "MENSUEL":
+        return f"Bilan Mensuel BRVM — {pi.get('mois', today.strftime('%B %Y'))}"
+    if freq == "TRIM":
+        return f"Bilan Trimestriel BRVM — T{pi.get('trimestre', (today.month - 1) // 3 + 1)} {pi.get('annee', today.year)}"
+    if freq == "ANNUEL":
+        return f"Bilan Annuel BRVM — {pi.get('annee', today.year)}"
+    return f"Note Stratégique BRVM — {today.strftime('%d/%m/%Y')}"
+
+
+def _note_fiches_html(freq: str, pi: dict, nb_rapports: int, nb_fiches: int) -> str:
+    colors = {"HEBDO": "#0F9D58", "MENSUEL": "#E37400", "TRIM": "#7B1FA2", "ANNUEL": "#1A237E"}
+    labels = {"HEBDO": "Synthèse Hebdomadaire", "MENSUEL": "Bilan Mensuel",
+              "TRIM": "Bilan Trimestriel", "ANNUEL": "Bilan Annuel"}
+    color = colors.get(freq, "#1A73E8")
+    label = labels.get(freq, "Note Stratégique")
+    return f"""<!DOCTYPE html><html lang="fr">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f0f2f5;font-family:Arial,sans-serif;">
+  <div style="max-width:640px;margin:32px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.1);">
+    <div style="background:{color};padding:24px 32px;">
+      <h1 style="margin:0;color:#fff;font-size:20px;">{label} BRVM</h1>
+      <p style="margin:6px 0 0;color:rgba(255,255,255,.85);font-size:13px;">
+        Période : {pi.get('date_debut', '—')} → {pi.get('date_fin', '—')}
+      </p>
+    </div>
+    <div style="padding:24px 32px;">
+      <table style="border-collapse:collapse;width:100%;max-width:440px;">
+        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;border:1px solid #ddd;">Séances analysées</td>
+          <td style="padding:8px 12px;border:1px solid #ddd;font-weight:bold;">{nb_rapports}</td></tr>
+        <tr><td style="padding:8px 12px;border:1px solid #ddd;">Fréquence</td>
+          <td style="padding:8px 12px;border:1px solid #ddd;">{pi.get('freq_label', freq)}</td></tr>
+        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;border:1px solid #ddd;">Pièces jointes</td>
+          <td style="padding:8px 12px;border:1px solid #ddd;font-weight:bold;">Note Stratégique + {nb_fiches} fiche(s)</td></tr>
+      </table>
+      <p style="margin-top:20px;color:#666;font-size:13px;line-height:1.6;">
+        Ce bilan a été généré automatiquement par l'Agent GitHub Rapports BRVM.<br>
+        Consultez les pièces jointes pour l'analyse détaillée.
+      </p>
+    </div>
+    <div style="background:#f5f5f5;padding:12px 32px;text-align:center;font-size:11px;color:#999;">
+      Analyse multi-IA : DeepSeek · Gemini · Mistral — Agent GitHub Rapports
+    </div>
+  </div>
+</body></html>"""
 
 
 # ── Sérialisation JSON (datetime → str) ─────────────────────────────────────
@@ -69,11 +156,12 @@ def cmd_collect():
     print(analysis.get("interpretation", ""))
 
     payload = {
-        "doc1_nom":  doc1["nom"],
-        "doc2_nom":  doc2["nom"],
-        "diff_data": diff_data,
-        "analysis":  analysis,
-        "collected_at": datetime.now(timezone.utc).isoformat(),
+        "doc1_nom":      doc1["nom"],
+        "doc2_nom":      doc2["nom"],
+        "diff_data":     diff_data,
+        "analysis":      analysis,
+        "collected_at":  datetime.now(timezone.utc).isoformat(),
+        "doc1_bytes_b64": base64.b64encode(doc1["contenu_bytes"]).decode("ascii"),
     }
     with open(COMPARISON_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, default=_default)
@@ -145,9 +233,102 @@ def cmd_rapport(type_rapport):
     rapport = generate(doc1_nom, doc2_nom, diff_data, analysis, type_rapport)
     log(f"Objet : {rapport['subject']}")
 
-    log("Envoi de l'email...")
-    ok = send_report(rapport["subject"], rapport["body_html"], rapport["body_text"])
+    attachments = []
+    if type_rapport == "quotidien":
+        doc1_b64 = payload.get("doc1_bytes_b64")
+        if doc1_b64:
+            doc1_bytes = base64.b64decode(doc1_b64)
+            pi_jour = _period_info("JOUR", [])
 
+            log("Génération de la Note Stratégique BRVM (JOUR)...")
+            try:
+                note_filename, note_bytes = generate_note([doc1_bytes], "JOUR", pi_jour)
+                attachments.append({"filename": note_filename, "data": note_bytes})
+                log(f"Note Stratégique générée : {note_filename}")
+            except Exception as e:
+                log(f"AVERTISSEMENT : échec note stratégique : {e}")
+
+            log("Génération des fiches sociétés (JOUR)...")
+            try:
+                fiches = generate_fiches([doc1_bytes], "JOUR", pi_jour)
+                for fname, fbytes in fiches:
+                    attachments.append({"filename": fname, "data": fbytes})
+                log(f"{len(fiches)} fiche(s) société générée(s).")
+            except Exception as e:
+                log(f"AVERTISSEMENT : échec fiches sociétés : {e}")
+        else:
+            log("AVERTISSEMENT : doc1_bytes_b64 absent — pièces jointes ignorées.")
+
+    log("Envoi de l'email...")
+    ok = send_report(
+        rapport["subject"],
+        rapport["body_html"],
+        rapport["body_text"],
+        attachments=attachments or None,
+    )
+
+    if ok:
+        log("Email envoyé avec succès.")
+    else:
+        log("ERREUR : échec de l'envoi de l'email.")
+        sys.exit(1)
+
+
+# ── Mode note + fiches multi-fréquences ──────────────────────────────────────
+
+def cmd_note_fiches(freq: str):
+    """Télécharge N docs, génère note stratégique + fiches sociétés, envoie un email."""
+    log(f"=== MODE NOTE-FICHES — {freq} ===")
+
+    n_map = {"HEBDO": 7, "MENSUEL": 30, "TRIM": 90}
+
+    if freq == "ANNUEL":
+        year = datetime.now(timezone.utc).year
+        log(f"Téléchargement de tous les rapports Word de l'année {year}...")
+        rapports = get_year_word_reports(year=year, repo_name=GH_REPO)
+    else:
+        n = n_map.get(freq, 1)
+        log(f"Téléchargement des {n} derniers rapports Word...")
+        rapports = get_latest_word_reports(repo_name=GH_REPO, n=n)
+
+    if not rapports:
+        log("ERREUR : aucun rapport disponible. Abandon.")
+        sys.exit(1)
+
+    log(f"{len(rapports)} rapport(s) disponible(s).")
+    docs_bytes_list = [r["contenu_bytes"] for r in rapports]
+    pi = _period_info(freq, rapports)
+
+    nb_fiches = 0
+    attachments = []
+
+    log(f"Génération de la Note Stratégique ({freq})...")
+    try:
+        note_filename, note_bytes = generate_note(docs_bytes_list, freq, pi)
+        attachments.append({"filename": note_filename, "data": note_bytes})
+        log(f"Note générée : {note_filename}")
+    except Exception as e:
+        log(f"AVERTISSEMENT : échec note stratégique : {e}")
+
+    log(f"Génération des fiches sociétés ({freq})...")
+    try:
+        fiches = generate_fiches(docs_bytes_list, freq, pi)
+        nb_fiches = len(fiches)
+        for fname, fbytes in fiches:
+            attachments.append({"filename": fname, "data": fbytes})
+        log(f"{nb_fiches} fiche(s) société générée(s).")
+    except Exception as e:
+        log(f"AVERTISSEMENT : échec fiches sociétés : {e}")
+
+    if not attachments:
+        log("ERREUR : aucune pièce jointe générée. Abandon.")
+        sys.exit(1)
+
+    subject = _note_fiches_subject(freq, pi)
+    body_html = _note_fiches_html(freq, pi, len(rapports), nb_fiches)
+
+    log(f"Envoi de l'email : {subject}")
+    ok = send_report(subject, body_html, attachments=attachments)
     if ok:
         log("Email envoyé avec succès.")
     else:
@@ -163,10 +344,15 @@ def main():
     )
     parser.add_argument(
         "mode",
-        choices=["collect", "rapport-jour", "rapport-hebdo", "rapport-mensuel", "rapport-annuel"],
+        choices=[
+            "collect",
+            "rapport-jour", "rapport-hebdo", "rapport-mensuel", "rapport-annuel",
+            "note-fiches-hebdo", "note-fiches-mensuel", "note-fiches-trim", "note-fiches-annuel",
+        ],
         help=(
-            "collect : télécharge, compare et analyse les rapports ; "
-            "rapport-jour/hebdo/mensuel/annuel : génère et envoie l'email"
+            "collect : télécharge, compare et analyse ; "
+            "rapport-* : génère et envoie le rapport comparatif ; "
+            "note-fiches-* : génère et envoie note stratégique + fiches sociétés"
         ),
     )
     args = parser.parse_args()
@@ -181,6 +367,14 @@ def main():
         cmd_rapport("mensuel")
     elif args.mode == "rapport-annuel":
         cmd_rapport_annuel()
+    elif args.mode == "note-fiches-hebdo":
+        cmd_note_fiches("HEBDO")
+    elif args.mode == "note-fiches-mensuel":
+        cmd_note_fiches("MENSUEL")
+    elif args.mode == "note-fiches-trim":
+        cmd_note_fiches("TRIM")
+    elif args.mode == "note-fiches-annuel":
+        cmd_note_fiches("ANNUEL")
 
 
 if __name__ == "__main__":

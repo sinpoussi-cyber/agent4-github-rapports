@@ -1,6 +1,6 @@
 requests
 python-docx
-anthropic
+anthropic>=0.40.0
 python-dotenv
 google-auth
 google-auth-oauthlib

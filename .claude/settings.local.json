@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(gh run *)",
+      "Bash(echo \"error: $?\")",
+      "Bash(where gh *)",
+      "PowerShell(Get-Command *)",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}

@@ -2,11 +2,15 @@ name: Agent 4 — GitHub Rapports Word
 
 on:
   schedule:
-    - cron: '0 6 * * *'    # collect       — tous les jours à 6h UTC
-    - cron: '0 20 * * *'   # rapport-jour  — tous les jours à 20h UTC
-    - cron: '0 7 * * 1'    # rapport-hebdo  — tous les lundis à 7h UTC
-    - cron: '0 7 1 * *'    # rapport-mensuel — le 1er du mois à 7h UTC
-    - cron: '0 8 1 1 *'    # rapport-annuel  — le 1er janvier à 8h UTC
+    - cron: '0 6 * * *'          # collect            — tous les jours à 6h UTC
+    - cron: '0 20 * * *'         # rapport-jour        — tous les jours à 20h UTC
+    - cron: '0 7 * * 1'          # rapport-hebdo       — tous les lundis à 7h UTC
+    - cron: '0 7 1 * *'          # rapport-mensuel     — le 1er du mois à 7h UTC
+    - cron: '0 8 1 1 *'          # rapport-annuel      — le 1er janvier à 8h UTC
+    - cron: '0 20 * * 1'         # note-fiches-hebdo   — tous les lundis à 20h UTC
+    - cron: '0 20 1 * *'         # note-fiches-mensuel — le 1er du mois à 20h UTC
+    - cron: '0 20 1 1,4,7,10 *'  # note-fiches-trim    — 1er jan/avr/jul/oct à 20h UTC
+    - cron: '0 21 1 1 *'         # note-fiches-annuel  — le 1er janvier à 21h UTC
   workflow_dispatch:
     inputs:
       mode:
@@ -20,6 +24,10 @@ on:
           - rapport-hebdo
           - rapport-mensuel
           - rapport-annuel
+          - note-fiches-hebdo
+          - note-fiches-mensuel
+          - note-fiches-trim
+          - note-fiches-annuel
 
 env:
   ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
@@ -351,3 +359,219 @@ jobs:
 
       - name: Envoyer le rapport annuel
         run: python main.py rapport-annuel
+
+  # ── NOTE + FICHES HEBDO — lundi à 20h UTC ─────────────────────────────────
+  note-fiches-hebdo:
+    name: Note + Fiches Hebdomadaires — Envoi email
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-hebdo'
+      || github.event_name == 'schedule' && github.event.schedule == '0 20 * * 1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            requests \
+            python-docx \
+            "anthropic==0.49.0" \
+            python-dotenv \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            PyGithub \
+            "httpx==0.27.0" \
+            "httpcore==1.0.9"
+
+      - name: Créer token.json depuis le secret
+        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
+
+      - name: Créer .env
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
+          REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+          GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
+          GH_REPO=${{ secrets.GH_REPO }}
+          EOF
+
+      - name: Générer et envoyer Note + Fiches Hebdomadaires
+        run: python main.py note-fiches-hebdo
+
+  # ── NOTE + FICHES MENSUEL — 1er du mois à 20h UTC ─────────────────────────
+  note-fiches-mensuel:
+    name: Note + Fiches Mensuelles — Envoi email
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-mensuel'
+      || github.event_name == 'schedule' && github.event.schedule == '0 20 1 * *'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            requests \
+            python-docx \
+            "anthropic==0.49.0" \
+            python-dotenv \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            PyGithub \
+            "httpx==0.27.0" \
+            "httpcore==1.0.9"
+
+      - name: Créer token.json depuis le secret
+        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
+
+      - name: Créer .env
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
+          REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+          GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
+          GH_REPO=${{ secrets.GH_REPO }}
+          EOF
+
+      - name: Générer et envoyer Note + Fiches Mensuelles
+        run: python main.py note-fiches-mensuel
+
+  # ── NOTE + FICHES TRIM — 1er jan/avr/jul/oct à 20h UTC ───────────────────
+  note-fiches-trim:
+    name: Note + Fiches Trimestrielles — Envoi email
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-trim'
+      || github.event_name == 'schedule' && github.event.schedule == '0 20 1 1,4,7,10 *'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            requests \
+            python-docx \
+            "anthropic==0.49.0" \
+            python-dotenv \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            PyGithub \
+            "httpx==0.27.0" \
+            "httpcore==1.0.9"
+
+      - name: Créer token.json depuis le secret
+        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
+
+      - name: Créer .env
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
+          REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+          GITHUB_TOKEN=${{ secrets.GH_TOKEN_PAT }}
+          GH_REPO=${{ secrets.GH_REPO }}
+          EOF
+
+      - name: Générer et envoyer Note + Fiches Trimestrielles
+        run: python main.py note-fiches-trim
+
+  # ── NOTE + FICHES ANNUEL — 1er janvier à 21h UTC ─────────────────────────
+  note-fiches-annuel:
+    name: Note + Fiches Annuelles — Envoi email
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-annuel'
+      || github.event_name == 'schedule' && github.event.schedule == '0 21 1 1 *'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            requests \
+            python-docx \
+            "anthropic==0.49.0" \
+            python-dotenv \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            PyGithub \
+            "httpx==0.27.0" \
+            "httpcore==1.0.9"
+
+      - name: Créer token.json depuis le secret
+        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
+
+      - name: Créer .env
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN=${{ secrets.GMAIL_REFRESH_TOKEN }}
+          REPORT_EMAIL_FROM=${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO=${{ secrets.REPORT_EMAIL_TO }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+          GH_TOKEN_PAT=${{ secrets.GH_TOKEN_PAT }}
+          GH_REPO=${{ secrets.GH_REPO }}
+          EOF
+
+      - name: Générer et envoyer Note + Fiches Annuelles
+        run: python main.py note-fiches-annuel
