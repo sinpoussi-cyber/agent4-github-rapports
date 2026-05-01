@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_IA_FOOTER = "Analyse générée par IA — DeepSeek · Gemini · Mistral"
 _MARGIN_CM = 1.5
 
 
@@ -44,7 +43,6 @@ def _cell_margins(cell, twips: int = 40):
 
 
 def _cw(cell, text, bold=False, size=8, color=None, bg=None, align=None):
-    """Écrit dans une cellule de façon sûre (clear + add_run)."""
     if bg:
         _cell_bg(cell, bg)
     _cell_margins(cell)
@@ -67,13 +65,39 @@ def _cp(p, before=0, after=1):
     p.paragraph_format.space_after = Pt(after)
 
 
-def _section_title(doc, text: str):
+def _partie_heading(doc, text: str):
+    p = doc.add_paragraph(style="Heading 2")
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after = Pt(4)
+    run = p.add_run(text)
+    run.bold = True
+    run.font.size = Pt(10)
+    run.font.color.rgb = _rgb("1A73E8")
+    return p
+
+
+def _add_separator(doc):
     p = doc.add_paragraph()
-    _cp(p, 2, 1)
+    p.paragraph_format.space_before = Pt(4)
+    p.paragraph_format.space_after = Pt(4)
+    pPr = p._p.get_or_add_pPr()
+    pBdr = OxmlElement("w:pBdr")
+    bot = OxmlElement("w:bottom")
+    bot.set(qn("w:val"), "single")
+    bot.set(qn("w:sz"), "6")
+    bot.set(qn("w:space"), "1")
+    bot.set(qn("w:color"), "CCCCCC")
+    pBdr.append(bot)
+    pPr.append(pBdr)
+
+
+def _narrative(doc, text: str, size: int = 9, italic: bool = False):
+    p = doc.add_paragraph()
+    p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    p.paragraph_format.space_after = Pt(4)
     r = p.add_run(text)
-    r.bold = True
-    r.font.size = Pt(9)
-    r.font.color.rgb = _rgb("1A73E8")
+    r.font.size = Pt(size)
+    r.italic = italic
     return p
 
 
@@ -120,15 +144,6 @@ def _reco_fg(reco: str) -> str:
     return "E37400"
 
 
-def _impact_emoji(impact: str) -> str:
-    i = str(impact or "").lower()
-    if any(w in i for w in ("positif", "bon", "haussier")):
-        return "🟢"
-    if any(w in i for w in ("négatif", "negatif", "mauvais", "baissier")):
-        return "🔴"
-    return "⚪"
-
-
 def _var_color(var: str) -> str:
     v = str(var or "").strip()
     if v.startswith("+"):
@@ -138,7 +153,7 @@ def _var_color(var: str) -> str:
     return "FFFFFF"
 
 
-def _s(data, key, default=""):
+def _s(data, key, default="") -> str:
     v = data.get(key)
     return str(v) if v is not None else default
 
@@ -164,7 +179,6 @@ def _extract_text(doc_bytes: bytes) -> str:
 # ── Contexte multi-documents ─────────────────────────────────────────────────
 
 def _build_context(docs_bytes: list, freq: str) -> str:
-    """Construit le texte source depuis une liste de documents (plus récent en premier)."""
     if len(docs_bytes) == 1:
         return _extract_text(docs_bytes[0])
 
@@ -235,18 +249,39 @@ RAPPORT :
 
 Retourne UNIQUEMENT une liste JSON. Chaque société suit ce schéma (null si absent) :
 {{
-  "ticker": "SGBCI", "nom": "...", "secteur": "...",
+  "ticker": "SGBCI", "nom": "Société Générale de Banques en Côte d'Ivoire", "secteur": "Banque",
   "cours": "14500", "var_1j": "+0.5%",
   "score": 82, "reco": "ACHAT", "confiance": "Élevée",
   "mm": "haussier", "boll": "neutre", "macd": "haussier", "rsi": "neutre", "stoch": "haussier",
   "volatilite": "3.2%", "beta": "0.85", "liquidite": "haute",
   "risque": "faible", "divergence": "aucune", "stabilite": "bonne",
-  "predictions": [
-    {{"j":1,"bas":"14400","pred":"14550","haut":"14700","var":"+0.3%","conf":3}},
-    {{"j":2,"bas":"14350","pred":"14500","haut":"14650","var":"+0.0%","conf":2}}
-  ],
-  "analyse_tech": "Tendance haussière, MM alignées (max 80c)",
-  "analyse_fond": "Bons résultats, PER attractif (max 80c)",
+  "cours_debut_100j": "14000",
+  "perf_100j": "+3.6%",
+  "plus_haut_100j": "15200",
+  "plus_bas_100j": "13500",
+  "tendance_100j": "haussière",
+  "volume_moyen_100j": "50M FCFA/j",
+  "analyse_cours_100j": "Texte narratif fluide de 6-8 lignes max couvrant la performance sur 100j, le cours de départ vs actuel, les bornes haute/basse, la tendance générale et le volume moyen. Professionnel et sans liste à puces.",
+  "mm_valeur": "14450",
+  "mm_signal": "Haussier",
+  "mm_detail": "La MM20 (14 200) reste au-dessus de la MM50 (13 900), confirmant un alignement haussier des moyennes.",
+  "boll_sup": "15000",
+  "boll_inf": "13800",
+  "boll_signal": "Neutre",
+  "boll_detail": "Le cours évolue dans le canal médian des bandes de Bollinger, sans signal de rupture imminent.",
+  "macd_valeur": "0.15",
+  "macd_signal_line": "0.08",
+  "macd_signal": "Haussier",
+  "macd_detail": "Le MACD (0.15) reste au-dessus de sa ligne de signal (0.08), indiquant un momentum positif persistant.",
+  "rsi_valeur": "62",
+  "rsi_signal": "Neutre",
+  "rsi_detail": "Le RSI à 62 se situe en zone neutre, sans signal de surachat ni de survente.",
+  "stoch_valeur": "75",
+  "stoch_signal": "Surachat modéré",
+  "stoch_detail": "Le Stochastique (75) approche la zone de surachat, à surveiller pour un potentiel retournement.",
+  "synthese_tech": "Synthèse technique en 2-3 lignes : bilan global des 5 indicateurs et recommandation technique.",
+  "analyse_fond": "Analyse fondamentale globale (max 80c)",
+  "analyse_fond_recente": "Analyse fondamentale basée UNIQUEMENT sur les documents datant de moins de 18 mois. 4-6 lignes max. null si aucun document récent disponible.",
   "docs": [{{"type":"AG","date":"15/05/2026","impact":"positif"}}],
   "resume_rapport": "Performance solide (max 80c)",
   "indicateurs_fin": "PER 8x, DY 5% (max 60c)",
@@ -259,7 +294,7 @@ FORMAT FINAL : [{{"ticker":"..."}}, ...]"""
 
     msg = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=3500,
+        max_tokens=4000,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = msg.content[0].text.strip()
@@ -285,43 +320,44 @@ def _bandeau(doc, s: dict, date_str: str):
     tbl = doc.add_table(rows=2, cols=4)
     tbl.style = "Table Grid"
 
-    # Ligne 1 : Ticker | Nom | Secteur | Date
+    # Ligne 1 : [TICKER]  [NOM COMPLET]  [SECTEUR]  [DATE]
     r0 = tbl.rows[0]
     _cw(r0.cells[0], ticker, bold=True, size=13, color="FFFFFF", bg="1A237E")
-    _cw(r0.cells[1], nom[:38], size=9, color="E8EAF6", bg="1A237E")
+    _cw(r0.cells[1], nom[:40], size=9, color="E8EAF6", bg="1A237E")
     _cw(r0.cells[2], secteur, size=8, color="C5CAE9", bg="283593")
     _cw(r0.cells[3], date_str, size=8, color="C5CAE9", bg="283593",
         align=WD_ALIGN_PARAGRAPH.RIGHT)
 
-    # Ligne 2 : Score | Label | Reco | Indicateurs
+    # Ligne 2 : Score : X/100  [Appréciation]  |  RECOMMANDATION  |  🟢MM 🔴Boll ...
     r1 = tbl.rows[1]
-    _cw(r1.cells[0], f"Score : {score if score is not None else '—'}/100",
+    score_str = str(score) if score is not None else "—"
+    _cw(r1.cells[0], f"Score : {score_str}/100  [{score_label}]",
         bold=True, size=9, color=score_color, bg="E8EAF6")
-    _cw(r1.cells[1], f"[{score_label}]", bold=True, size=9, color=score_color, bg="E8EAF6")
-    _cw(r1.cells[2], reco, bold=True, size=9, color=_reco_fg(reco), bg=_reco_bg(reco))
+    _cw(r1.cells[1], reco, bold=True, size=9, color=_reco_fg(reco), bg=_reco_bg(reco))
 
-    ind = " ".join([
+    ind = "  ".join([
         f"{_signal_emoji(_s(s, 'mm'))}MM",
         f"{_signal_emoji(_s(s, 'boll'))}Boll",
         f"{_signal_emoji(_s(s, 'macd'))}MACD",
         f"{_signal_emoji(_s(s, 'rsi'))}RSI",
         f"{_signal_emoji(_s(s, 'stoch'))}Stoch",
     ])
-    _cw(r1.cells[3], ind, size=8, bg="E8EAF6")
+    r1.cells[2].merge(r1.cells[3])
+    _cw(r1.cells[2], ind, size=8, bg="E8EAF6")
 
 
-def _bloc1_metriques(doc, s: dict):
-    _section_title(doc, "MÉTRIQUES CLÉS")
+def _bloc_metriques(doc, s: dict):
+    _add_separator(doc)
 
     pairs = [
-        ("Cours actuel",       _s(s, "cours", "—")),
-        ("Variation 1j",       _s(s, "var_1j", "—")),
-        ("Volatilité",         _s(s, "volatilite", "—")),
-        ("Bêta",               _s(s, "beta", "—")),
-        ("Liquidité",          _s(s, "liquidite", "—")),
-        ("Risque",             _s(s, "risque", "—")),
+        ("Cours actuel",         _s(s, "cours", "—")),
+        ("Variation 1j",         _s(s, "var_1j", "—")),
+        ("Volatilité",           _s(s, "volatilite", "—")),
+        ("Bêta",                 _s(s, "beta", "—")),
+        ("Liquidité",            _s(s, "liquidite", "—")),
+        ("Risque",               _s(s, "risque", "—")),
         ("Divergence tech/fond", _s(s, "divergence", "—")),
-        ("Stabilité",          _s(s, "stabilite", "—")),
+        ("Stabilité",            _s(s, "stabilite", "—")),
     ]
 
     tbl = doc.add_table(rows=4, cols=4)
@@ -335,144 +371,119 @@ def _bloc1_metriques(doc, s: dict):
         _cw(tbl.rows[i].cells[3], rv, size=8)
 
 
-def _bloc2_predictions(doc, s: dict):
-    _section_title(doc, "PRÉDICTIONS J+1 À J+10  (IC 90%)")
-
-    predictions = _sl(s, "predictions")
-
-    tbl = doc.add_table(rows=1, cols=6)
-    tbl.style = "Table Grid"
-    for i, h in enumerate(["Jour ⭐", "Date", "Borne basse", "Prix prédit", "Borne haute", "Var. %"]):
-        _cw(tbl.rows[0].cells[i], h, bold=True, size=7.5, color="FFFFFF", bg="1A73E8")
-
-    today = date.today()
-    for j in range(1, 11):
-        pred = next((p for p in predictions if p.get("j") == j), {}) if predictions else {}
-        conf = max(1, min(3, int(pred.get("conf") or 1)))
-        var = str(pred.get("var") or "")
-        cell_color = _var_color(var)
-
-        row = tbl.add_row()
-        _cw(row.cells[0], f"J+{j} {'⭐' * conf}", size=7.5)
-        _cw(row.cells[1], (today + timedelta(days=j)).strftime("%d/%m"), size=7.5)
-        _cw(row.cells[2], str(pred.get("bas") or ""), size=7.5, bg=cell_color)
-        _cw(row.cells[3], str(pred.get("pred") or ""), bold=True, size=7.5, bg=cell_color)
-        _cw(row.cells[4], str(pred.get("haut") or ""), size=7.5, bg=cell_color)
-        _cw(row.cells[5], var, bold=True, size=7.5, bg=cell_color)
-
+def _placeholder_graphique(doc):
     p = doc.add_paragraph()
-    _cp(p, 1, 0)
+    p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(6)
     r = p.add_run(
-        "⚠ Prédictions statistiques à titre indicatif — "
-        "⭐⭐⭐ confiance élevée / ⭐ confiance faible — "
-        "Ne constituent pas un conseil en investissement."
+        "Courbe d'évolution du cours de l'action sur les 100 derniers jours\n"
+        "avec prédictions"
     )
-    r.font.size = Pt(7)
     r.italic = True
+    r.font.size = Pt(9)
     r.font.color.rgb = _rgb("888888")
 
 
-def _bloc3_analyse(doc, s: dict):
-    _section_title(doc, "ANALYSE IA MULTI-AI  (DeepSeek · Gemini · Mistral)")
+def _partie1_evolution(doc, s: dict):
+    _add_separator(doc)
+    _partie_heading(doc, "PARTIE 1 : ANALYSE DE L'ÉVOLUTION DU COURS (100 derniers jours)")
 
-    for label, key in [("Technique", "analyse_tech"), ("Fondamental", "analyse_fond")]:
-        val = _s(s, key, "—")
-        p = doc.add_paragraph()
-        _cp(p, 0, 0)
-        r_l = p.add_run(f"{label} : ")
-        r_l.bold = True
-        r_l.font.size = Pt(8)
-        r_v = p.add_run(val)
-        r_v.font.size = Pt(8)
-
-    reco = _s(s, "reco", "NEUTRE")
-    confiance = _s(s, "confiance", "—")
-    p2 = doc.add_paragraph()
-    _cp(p2, 1, 0)
-    r2 = p2.add_run(f"  ➤ Recommandation : {reco}   |   Confiance : {confiance}")
-    r2.bold = True
-    r2.font.size = Pt(8.5)
-    r2.font.color.rgb = _rgb(_reco_fg(reco))
-
-
-def _bloc4_documents(doc, s: dict):
-    _section_title(doc, "DOCUMENTS OFFICIELS BRVM")
-
-    docs = _sl(s, "docs")
-    if not docs:
-        p = doc.add_paragraph("—")
-        _cp(p, 0, 1)
-        p.runs[0].font.size = Pt(8)
+    analyse = _s(s, "analyse_cours_100j")
+    if analyse and analyse not in ("", "—"):
+        _narrative(doc, analyse)
         return
 
-    tbl = doc.add_table(rows=1, cols=3)
-    tbl.style = "Table Grid"
-    for i, h in enumerate(["Type / Badge", "Date", "Impact"]):
-        _cw(tbl.rows[0].cells[i], h, bold=True, size=8, bg="E8F0FE")
+    ticker = _s(s, "ticker", "ce titre")
+    cours = _s(s, "cours", "—")
+    cours_debut = _s(s, "cours_debut_100j", "—")
+    perf = _s(s, "perf_100j", "—")
+    plus_haut = _s(s, "plus_haut_100j", "—")
+    plus_bas = _s(s, "plus_bas_100j", "—")
+    tendance = _s(s, "tendance_100j", "—")
+    volume = _s(s, "volume_moyen_100j", "—")
 
-    today = date.today()
-    for item in docs[:3]:
-        doc_type = str(item.get("type") or "—")
-        doc_date = str(item.get("date") or "")
-        impact = str(item.get("impact") or "")
-
-        badge = "📅 À JOUR"
-        try:
-            fmt = "%d/%m/%Y" if "/" in doc_date else "%Y-%m-%d"
-            d = datetime.strptime(doc_date, fmt).date()
-            delta = (d - today).days
-            if -7 <= delta <= 30:
-                badge = "⭐ RÉCENT"
-            elif delta < -30:
-                badge = "⚠️ ANCIEN"
-        except (ValueError, AttributeError):
-            pass
-
-        impact_bg = ("C6EFCE" if "positif" in impact.lower()
-                     else ("FFC7CE" if any(w in impact.lower() for w in ("négatif", "negatif")) else "F5F5F5"))
-
-        row = tbl.add_row()
-        _cw(row.cells[0], f"{doc_type}  {badge}", size=7.5)
-        _cw(row.cells[1], doc_date, size=7.5)
-        _cw(row.cells[2], _impact_emoji(impact), size=8, bg=impact_bg,
-            align=WD_ALIGN_PARAGRAPH.CENTER)
+    texte = (
+        f"{ticker} a évolué de {cours_debut} FCFA à {cours} FCFA au cours des 100 dernières "
+        f"séances, enregistrant une performance de {perf}. "
+        f"Le titre a atteint un plus haut de {plus_haut} FCFA et un plus bas de {plus_bas} FCFA "
+        f"sur la période, témoignant d'une amplitude notable. "
+        f"La tendance générale est {tendance}. "
+        f"Le volume moyen d'échanges s'établit à {volume}."
+    )
+    _narrative(doc, texte)
 
 
-def _bloc5_rapports(doc, s: dict):
-    _section_title(doc, "RAPPORTS & RISQUES")
+def _partie2_technique(doc, s: dict):
+    _add_separator(doc)
+    _partie_heading(doc, "PARTIE 2 : ANALYSE TECHNIQUE")
 
-    for label, key in [("Rapport", "resume_rapport"), ("Indicateurs", "indicateurs_fin")]:
-        val = _s(s, key, "—")
+    indicateurs = [
+        ("Moyennes Mobiles (MM)", "mm", "mm_valeur",   "mm_detail"),
+        ("Bandes de Bollinger",  "boll", "boll_sup",   "boll_detail"),
+        ("MACD",                 "macd", "macd_valeur", "macd_detail"),
+        ("RSI",                  "rsi",  "rsi_valeur",  "rsi_detail"),
+        ("Stochastique",         "stoch","stoch_valeur","stoch_detail"),
+    ]
+
+    for label, sig_key, val_key, detail_key in indicateurs:
+        signal = _s(s, sig_key)
+        valeur = _s(s, val_key)
+        detail = _s(s, detail_key)
+        emoji = _signal_emoji(signal)
+
+        if detail and detail not in ("", "—"):
+            ligne = f"{emoji} {label}"
+            if valeur and valeur not in ("", "—"):
+                ligne += f" ({valeur})"
+            ligne += f" : {detail}"
+        elif valeur and valeur not in ("", "—"):
+            ligne = f"{emoji} {label} ({valeur}) — signal {signal}."
+        else:
+            ligne = f"{emoji} {label} — signal {signal}."
+
         p = doc.add_paragraph()
-        _cp(p, 0, 0)
-        r_l = p.add_run(f"{label} : ")
-        r_l.bold = True
-        r_l.font.size = Pt(8)
-        r_v = p.add_run(val)
-        r_v.font.size = Pt(8)
+        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        r = p.add_run(ligne)
+        r.font.size = Pt(9)
 
-    reco_src = _s(s, "reco_src", "").lower()
-    if reco_src:
-        src_emoji = "🟢" if reco_src == "vert" else ("🟡" if reco_src == "orange" else "🔴")
-        p = doc.add_paragraph()
-        _cp(p, 0, 0)
-        r = p.add_run(f"Recommandation source : {src_emoji} {reco_src.capitalize()}")
-        r.font.size = Pt(8)
+    synthese = _s(s, "synthese_tech") or _s(s, "analyse_tech")
+    if synthese and synthese not in ("", "—"):
+        doc.add_paragraph()
+        _narrative(doc, synthese, italic=True)
+
+
+def _partie3_fondamentale(doc, s: dict):
+    _add_separator(doc)
+    _partie_heading(doc, "PARTIE 3 : ANALYSE FONDAMENTALE")
+
+    analyse = _s(s, "analyse_fond_recente")
+    if not analyse or analyse in ("", "—", "null", "None"):
+        analyse = _s(s, "analyse_fond")
+
+    if not analyse or analyse in ("", "—", "null", "None"):
+        p = doc.add_paragraph("Aucune publication récente disponible.")
+        p.paragraph_format.space_after = Pt(4)
+        p.runs[0].font.size = Pt(9)
+        p.runs[0].italic = True
+    else:
+        _narrative(doc, analyse)
 
     risques = _sl(s, "risques")
     if risques:
-        p = doc.add_paragraph()
-        _cp(p, 1, 0)
-        r = p.add_run("⚠️ Risques : " + "   |   ".join(str(x) for x in risques[:2]))
-        r.font.size = Pt(8)
-        r.font.color.rgb = _rgb("E37400")
+        p_r = doc.add_paragraph()
+        p_r.paragraph_format.space_after = Pt(2)
+        r_r = p_r.add_run("⚠️ Risques : " + "   |   ".join(str(x) for x in risques[:2]))
+        r_r.font.size = Pt(8)
+        r_r.font.color.rgb = _rgb("E37400")
 
     perspectives = _s(s, "perspectives")
-    if perspectives:
-        p = doc.add_paragraph()
-        _cp(p, 0, 0)
-        r = p.add_run(f"🔮 Perspectives : {perspectives}")
-        r.font.size = Pt(8)
+    if perspectives and perspectives not in ("", "—"):
+        p_p = doc.add_paragraph()
+        p_p.paragraph_format.space_after = Pt(2)
+        r_p = p_p.add_run(f"🔮 Perspectives : {perspectives}")
+        r_p.font.size = Pt(8)
 
 
 def _pied(doc, date_str: str, freq: str = "JOUR", period_info: dict = None):
@@ -494,7 +505,7 @@ def _pied(doc, date_str: str, freq: str = "JOUR", period_info: dict = None):
             f"{period_info.get('date_debut', '—')} → {period_info.get('date_fin', '—')}"
             f" ({period_info.get('nb_seances', '—')} séances)"
         )
-    r = p.add_run(f"{_IA_FOOTER}{period_suffix}   |   Document confidentiel — {date_str}")
+    r = p.add_run(f"Document confidentiel — {date_str}{period_suffix}")
     r.font.size = Pt(7)
     r.italic = True
     r.font.color.rgb = _rgb("999999")
@@ -520,11 +531,11 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR", period_info: d
         _cp(p0, 0, 0)
 
     _bandeau(doc, s, date_str)
-    _bloc1_metriques(doc, s)
-    _bloc2_predictions(doc, s)
-    _bloc3_analyse(doc, s)
-    _bloc4_documents(doc, s)
-    _bloc5_rapports(doc, s)
+    _bloc_metriques(doc, s)
+    _placeholder_graphique(doc)
+    _partie1_evolution(doc, s)
+    _partie2_technique(doc, s)
+    _partie3_fondamentale(doc, s)
     _pied(doc, date_str, freq, period_info)
 
     buf = io.BytesIO()
