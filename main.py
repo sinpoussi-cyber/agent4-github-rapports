@@ -196,7 +196,7 @@ def cmd_collect():
         json.dump(payload, f, ensure_ascii=False, indent=2, default=_default)
     log(f"Résultat sauvegardé dans '{COMPARISON_FILE}'.")
 
-    log("Collect terminé. L'email sera envoyé par rapport-jour à 20h.")
+    log("Collect terminé. Le rapport sera généré et envoyé immédiatement.")
 
 
 def cmd_rapport_annuel():
