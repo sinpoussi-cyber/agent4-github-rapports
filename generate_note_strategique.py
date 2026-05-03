@@ -1,8 +1,11 @@
 import io
 import json
+import logging
 import os
 from collections import defaultdict
 from datetime import date
+
+logger = logging.getLogger(__name__)
 
 import anthropic
 from docx import Document
@@ -166,7 +169,10 @@ def _extract_text(doc_bytes: bytes) -> str:
             cells = [c.text.strip() for c in row.cells if c.text.strip()]
             if cells:
                 lines.append(" | ".join(cells))
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    logger.info(f"[DEBUG] Longueur texte extrait : {len(text)} chars")
+    logger.info(f"[DEBUG] Texte extrait (500 premiers chars) : {text[:500]}")
+    return text
 
 
 # ── Contexte multi-documents ─────────────────────────────────────────────────
@@ -179,6 +185,7 @@ def _build_context(docs_bytes: list, freq: str) -> str:
     chars_older = {"HEBDO": 3000, "MENSUEL": 2000, "TRIM": 1500, "ANNUEL": 1000}.get(freq, 2000)
 
     recent = _extract_text(docs_bytes[0])[:25000]
+    logger.info(f"[DEBUG] Texte envoyé à Claude (200 premiers chars) : {recent[:200]}")
     older_parts = []
     for i, db in enumerate(docs_bytes[1:max_older + 1], 1):
         excerpt = _extract_text(db)[:chars_older]
