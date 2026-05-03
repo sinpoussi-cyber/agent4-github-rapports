@@ -170,8 +170,8 @@ def _extract_text(doc_bytes: bytes) -> str:
             if cells:
                 lines.append(" | ".join(cells))
     text = "\n".join(lines)
-    logger.info(f"[DEBUG] Longueur texte extrait : {len(text)} chars")
-    logger.info(f"[DEBUG] Texte extrait (500 premiers chars) : {text[:500]}")
+    print(f"[DEBUG] Longueur texte extrait : {len(text)} chars")
+    print(f"[DEBUG] Texte extrait (500 premiers chars) : {text[:500]}")
     return text
 
 
@@ -185,7 +185,7 @@ def _build_context(docs_bytes: list, freq: str) -> str:
     chars_older = {"HEBDO": 3000, "MENSUEL": 2000, "TRIM": 1500, "ANNUEL": 1000}.get(freq, 2000)
 
     recent = _extract_text(docs_bytes[0])[:25000]
-    logger.info(f"[DEBUG] Texte envoyé à Claude (200 premiers chars) : {recent[:200]}")
+    print(f"[DEBUG] Texte envoyé à Claude (200 premiers chars) : {recent[:200]}")
     older_parts = []
     for i, db in enumerate(docs_bytes[1:max_older + 1], 1):
         excerpt = _extract_text(db)[:chars_older]

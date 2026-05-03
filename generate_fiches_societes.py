@@ -298,12 +298,20 @@ FORMAT FINAL : [{{"ticker":"..."}}, ...]"""
         messages=[{"role": "user", "content": prompt}],
     )
     raw = msg.content[0].text.strip()
+    print(f"  [Fiches/DEBUG] Réponse Claude brute ({len(raw)} chars) :\n{raw[:2000]}")
     start, end = raw.find("["), raw.rfind("]") + 1
     if start == -1 or end == 0:
+        print(f"  [Fiches/DEBUG] ERREUR : aucun tableau JSON trouvé dans la réponse (start={start}, end={end})")
         return []
+    json_slice = raw[start:end]
+    print(f"  [Fiches/DEBUG] JSON extrait ({len(json_slice)} chars) : {json_slice[:500]}")
     try:
-        return json.loads(raw[start:end])
-    except json.JSONDecodeError:
+        parsed = json.loads(json_slice)
+        print(f"  [Fiches/DEBUG] JSON parsé OK : {len(parsed)} société(s)")
+        return parsed
+    except json.JSONDecodeError as e:
+        print(f"  [Fiches/DEBUG] ERREUR JSONDecodeError : {e}")
+        print(f"  [Fiches/DEBUG] Extrait problématique : {json_slice[:300]}")
         return []
 
 
@@ -576,17 +584,23 @@ def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> list:
         total = (len(tickers) + batch_size - 1) // batch_size
         print(f"  [Fiches/{freq}] Extraction batch {batch_num}/{total} : {', '.join(batch)}")
         companies = _extract_batch(full_text, batch, freq, period_info)
+        print(f"  [Fiches/{freq}] Batch {batch_num} résultat : {len(companies)} société(s) extraite(s)")
+        for c in companies:
+            print(f"  [Fiches/{freq}]   -> ticker={c.get('ticker')!r}, nom={c.get('nom')!r}")
         all_companies.extend(companies)
 
+    print(f"  [Fiches/{freq}] Total sociétés extraites : {len(all_companies)}")
     results = []
     for company in all_companies:
         ticker = str(company.get("ticker") or "").strip()
         if not ticker:
+            print(f"  [Fiches/{freq}] SKIP : société sans ticker — {company}")
             continue
         try:
             docx_bytes = _build_fiche_docx(company, date_str, freq, period_info)
             filename = f"Fiche_{ticker}_{date_file}_{freq_suffix}.docx"
             results.append((filename, docx_bytes))
+            print(f"  [Fiches/{freq}] Fiche générée : {filename}")
         except Exception as e:
             print(f"  [Fiches/{freq}] AVERTISSEMENT : fiche {ticker} ignorée — {e}")
 
