@@ -270,7 +270,7 @@ def cmd_rapport(type_rapport):
             today_str = date.today().strftime("%Y%m%d")
             pi_jour = _period_info("JOUR", [])
 
-            log("Génération de la Note Stratégique BRVM (JOUR)...")
+            log("[Pipeline] Étape 1/2 : Note Stratégique BRVM (JOUR)...")
             try:
                 _, note_bytes = generate_note([doc1_bytes], "JOUR", pi_jour)
                 note_filename = f"Note_Strategique_BRVM_JOUR_{today_str}.docx"
@@ -279,9 +279,10 @@ def cmd_rapport(type_rapport):
             except Exception as e:
                 log(f"AVERTISSEMENT : échec note stratégique : {e}")
 
-            log("Génération des fiches sociétés (JOUR)...")
+            log("[Pipeline] Étape 2/2 : Fiches Sociétés — Extraction LLM → Enrichissement → Word...")
             try:
                 fiches = generate_fiches([doc1_bytes], "JOUR", pi_jour)
+                log(f"[Pipeline] {len(fiches)} société(s) extraite(s) → {len(fiches)} fiche(s) générée(s).")
                 if fiches:
                     fiches_filename = f"Fiches_Societes_{today_str}.docx"
                     fiches_bytes = (
@@ -289,7 +290,9 @@ def cmd_rapport(type_rapport):
                         else _merge_docx([fbytes for _, fbytes in fiches])
                     )
                     attachments.append({"filename": fiches_filename, "data": fiches_bytes})
-                    log(f"{len(fiches)} fiche(s) société fusionnée(s) → {fiches_filename}")
+                    log(f"{len(fiches)} fiche(s) fusionnée(s) → {fiches_filename}")
+                else:
+                    log("AVERTISSEMENT : aucune fiche générée.")
             except Exception as e:
                 log(f"AVERTISSEMENT : échec fiches sociétés : {e}")
         else:
@@ -338,7 +341,7 @@ def cmd_note_fiches(freq: str):
     nb_fiches = 0
     attachments = []
 
-    log(f"Génération de la Note Stratégique ({freq})...")
+    log(f"[Pipeline] Étape 1/2 : Note Stratégique BRVM ({freq})...")
     try:
         note_filename, note_bytes = generate_note(docs_bytes_list, freq, pi)
         attachments.append({"filename": note_filename, "data": note_bytes})
@@ -346,13 +349,13 @@ def cmd_note_fiches(freq: str):
     except Exception as e:
         log(f"AVERTISSEMENT : échec note stratégique : {e}")
 
-    log(f"Génération des fiches sociétés ({freq})...")
+    log(f"[Pipeline] Étape 2/2 : Fiches Sociétés ({freq}) — Extraction LLM → Enrichissement → Word...")
     try:
         fiches = generate_fiches(docs_bytes_list, freq, pi)
         nb_fiches = len(fiches)
+        log(f"[Pipeline] {nb_fiches} société(s) extraite(s) → {nb_fiches} fiche(s) générée(s).")
         for fname, fbytes in fiches:
             attachments.append({"filename": fname, "data": fbytes})
-        log(f"{nb_fiches} fiche(s) société générée(s).")
     except Exception as e:
         log(f"AVERTISSEMENT : échec fiches sociétés : {e}")
 

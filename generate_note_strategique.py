@@ -2,7 +2,6 @@ import io
 import json
 import logging
 import os
-from collections import defaultdict
 from datetime import date
 
 logger = logging.getLogger(__name__)
@@ -18,8 +17,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _DESTINATAIRE = (
-    "À l'attention de Madame la Directrice\n"
-    "de l'Antenne Nationale de Bourse de Côte d'Ivoire"
+    "À l'attention de Madame Corinne Houmou ORMON\n"
+    "Directrice de l'Antenne Nationale de Bourse de Côte d'Ivoire"
 )
 
 
@@ -153,6 +152,206 @@ def _tbl_header(tbl, headers, bg="E8F0FE", fg="333333"):
         run.bold = True
         run.font.size = Pt(9)
         run.font.color.rgb = _rgb(fg)
+
+
+def _bloc(doc, label: str, texte: str, bg: str, fg: str = "1A1A1A"):
+    """Bloc coloré POINT CLÉ / RISQUE / OPPORTUNITÉ inséré dans le document."""
+    tbl = doc.add_table(rows=1, cols=1)
+    cell = tbl.rows[0].cells[0]
+    _cell_bg(cell, bg)
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    tcMar = OxmlElement("w:tcMar")
+    for side in ("top", "bottom", "left", "right"):
+        el = OxmlElement(f"w:{side}")
+        el.set(qn("w:w"), "100")
+        el.set(qn("w:type"), "dxa")
+        tcMar.append(el)
+    tcPr.append(tcMar)
+    p = cell.paragraphs[0]
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(0)
+    r1 = p.add_run(f"{label}  ")
+    r1.bold = True
+    r1.font.size = Pt(9)
+    r1.font.color.rgb = _rgb(fg)
+    r2 = p.add_run(texte)
+    r2.font.size = Pt(9)
+    r2.font.color.rgb = _rgb("333333")
+    sp = doc.add_paragraph()
+    sp.paragraph_format.space_before = Pt(0)
+    sp.paragraph_format.space_after = Pt(3)
+
+
+def _sep_synthese(doc):
+    """Séparateur visuel '▌ SYNTHÈSE EXÉCUTIVE'."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(3)
+    r = p.add_run("▌  SYNTHÈSE EXÉCUTIVE")
+    r.bold = True
+    r.font.size = Pt(9)
+    r.font.color.rgb = _rgb("1558A7")
+
+
+def _sep_detail(doc):
+    """Séparateur visuel '▌ ANALYSE DÉTAILLÉE'."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after = Pt(3)
+    r = p.add_run("▌  ANALYSE DÉTAILLÉE")
+    r.bold = True
+    r.font.size = Pt(9)
+    r.font.color.rgb = _rgb("666666")
+
+
+def _graph_ph(doc, texte: str):
+    """Placeholder de graphique centré en italique gris."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(2)
+    p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p.add_run(texte)
+    r.italic = True
+    r.font.size = Pt(9)
+    r.font.color.rgb = _rgb("888888")
+
+
+def _graph_lecture(doc, texte: str):
+    """Lecture du graphique en italique discret sous le placeholder."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(2)
+    p.paragraph_format.space_after = Pt(6)
+    r = p.add_run("Lecture du graphique — " + texte)
+    r.italic = True
+    r.font.size = Pt(9)
+    r.font.color.rgb = _rgb("444444")
+
+
+def _interp_tendance(tendance: str, perf: str) -> str:
+    """Interprétation analytique approfondie d'une tendance de marché."""
+    t = str(tendance or "").lower()
+    positif = str(perf or "").strip().startswith("+")
+    if "haussier" in t and positif:
+        return (
+            "Cette dynamique haussière traduit un regain d'appétit pour le risque, "
+            "porté par une demande institutionnelle soutenue sur les valeurs de référence. "
+            "La conjonction d'une tendance de fond positive et d'une performance cumulée favorable "
+            "constitue un signal de continuité : les investisseurs peuvent envisager de maintenir, "
+            "voire de renforcer leurs expositions sur les titres affichant les meilleurs scores composites. "
+            "La sélectivité reste néanmoins de mise — les valeurs à faible liquidité doivent être traitées "
+            "avec prudence même dans un contexte porteur."
+        )
+    if "haussier" in t:
+        return (
+            "La tendance de fond demeure haussière, même si la performance récente indique "
+            "une phase de consolidation pouvant précéder une reprise du momentum. "
+            "Ce type de configuration — tendance structurelle intacte mais progression momentanément freinée — "
+            "représente souvent une opportunité d'entrée tactique pour les investisseurs n'ayant pas encore "
+            "initié de position, sous réserve d'une confirmation technique à court terme. "
+            "Il convient de surveiller les niveaux de support clés : un franchissement à la baisse "
+            "remettrait en cause le scénario haussier de base."
+        )
+    if "baissier" in t:
+        return (
+            "Cette configuration baissière signale une prudence accrue des opérateurs, "
+            "susceptible de refléter des prises de bénéfices massives ou des incertitudes macro-économiques "
+            "pesant sur la valorisation des actifs cotés. "
+            "Dans ce contexte, la priorité est à la préservation du capital : réduire les expositions "
+            "sur les titres à faible score fondamental, privilégier le cash et les valeurs défensives "
+            "à dividendes stables, et éviter tout renforcement sur momentum baissier. "
+            "Un retournement ne pourra être confirmé qu'après une clôture franche au-dessus "
+            "des résistances techniques identifiées."
+        )
+    return (
+        "Le marché traverse une phase de neutralité et de consolidation, caractérisée par "
+        "une absence de conviction directionnelle des opérateurs et des volumes en repli. "
+        "Cette stabilité apparente peut masquer des tensions latentes — elle est souvent "
+        "précurseur d'une rupture de tendance dont la direction doit être anticipée. "
+        "La stratégie adaptée consiste à maintenir une allocation équilibrée, "
+        "en réduisant l'exposition aux valeurs les plus volatiles et en conservant "
+        "une réserve de liquidités permettant d'agir rapidement à la première confirmation directionnelle."
+    )
+
+
+def _lecture_graph_indice(idx: dict) -> str:
+    """Analyse graphique approfondie (4 phrases) pour l'indice BRVM Composite."""
+    niveau = idx["niveau"]
+    haut = idx["plus_haut"]
+    bas = idx["plus_bas"]
+    perf = idx["perf_100j"]
+    t = str(idx["tendance"]).lower()
+    if "haussier" in t:
+        return (
+            f"La courbe décrit une progression structurée entre {bas} et {haut} points sur la période, "
+            f"avec des phases de correction limitées qui ont systématiquement débouché sur de nouveaux plus hauts — "
+            f"témoignant d'une structure technique fondamentalement saine. "
+            f"Le gain cumulé de {perf} reflète un réel intérêt acheteur, non une simple effervescence spéculative. "
+            f"À {niveau} points, l'indice se positionne en zone haute de son couloir de valorisation : "
+            f"la résistance à {haut} constitue le prochain verrou à franchir pour ouvrir un nouveau palier haussier. "
+            f"Un repli sous {bas} invaliderait le scénario haussier et inviterait à réviser l'allocation."
+        )
+    if "baissier" in t:
+        return (
+            f"L'évolution graphique révèle une pression vendeuse structurelle depuis {haut} vers {bas} points, "
+            f"sans rebond technique significatif capable d'interrompre la séquence de plus bas successifs. "
+            f"La performance de {perf} sur la période matérialise l'ampleur de la correction et "
+            f"souligne l'absence d'acheteurs suffisamment convaincus pour absorber les flux vendeurs. "
+            f"Le niveau actuel de {niveau} points représente un support critique : "
+            f"son franchissement à la baisse ouvrirait la voie vers {bas} en première instance. "
+            f"Toute tentative de rebond doit être confirmée en clôture avant d'envisager un repositionnement."
+        )
+    return (
+        f"L'indice évolue dans un couloir de consolidation compris entre {bas} et {haut} points, "
+        f"sans orientation directionnelle franche sur la période analysée. "
+        f"La performance de {perf} illustre l'équilibre des forces en présence — "
+        f"les acheteurs et les vendeurs s'annulant mutuellement sans qu'un camp ne prenne durablement l'avantage. "
+        f"À {niveau} points, l'indice navigue en zone médiane de son range : "
+        f"un bris au-dessus de {haut} serait le signal acheteur attendu, "
+        f"un bris sous {bas} ouvrirait à la baisse. "
+        f"La stratégie recommandée dans ce contexte : attente et préservation du capital."
+    )
+
+
+def _lecture_graph_capi(cap: dict) -> str:
+    """Analyse graphique approfondie (4 phrases) pour la capitalisation boursière."""
+    evolution = str(cap.get("evolution") or "").strip()
+    valeur = cap["valeur"]
+    pic = cap.get("pic", "—")
+    plancher = cap.get("plancher", "—")
+    if evolution.startswith("+"):
+        pic_str = f", après avoir atteint un pic à {pic}" if pic != "—" else ""
+        return (
+            f"La progression de la capitalisation à {valeur}{pic_str} confirme une création de "
+            f"valeur nette sur le marché — signe que les flux entrants surpassent les sorties de capitaux. "
+            f"Cette dynamique positive reflète un intérêt institutionnel soutenu et une confiance "
+            f"des opérateurs dans la solidité des fondamentaux des sociétés cotées. "
+            f"Une capitalisation en hausse améliore mécaniquement la profondeur du marché et "
+            f"réduit le risque de distorsion de prix sur les titres de référence. "
+            f"Pour les investisseurs, ce contexte favorise les stratégies d'accumulation progressive "
+            f"sur les valeurs à score composite élevé."
+        )
+    if evolution.startswith("-"):
+        plancher_str = f", avec un plancher à {plancher} atteint sur la période" if plancher != "—" else ""
+        return (
+            f"Le recul de la capitalisation à {valeur}{plancher_str} signale une sortie nette de capitaux, "
+            f"traduisant soit des prises de bénéfices coordonnées, soit une défiance des investisseurs "
+            f"face à un contexte macro-économique ou sectoriel dégradé. "
+            f"Une capitalisation en repli réduit la profondeur du marché et amplifie la sensibilité "
+            f"du prix des titres aux ordres de vente — le risque de slippage est accru. "
+            f"Cette configuration invite à une révision des pondérations : alléger les positions "
+            f"sur les valeurs à faible liquidité en priorité, et renforcer la part de cash du portefeuille."
+        )
+    return (
+        f"La capitalisation stabilisée à {valeur} traduit un équilibre entre flux acheteurs et vendeurs, "
+        f"caractéristique d'une phase d'attente sur les marchés. "
+        f"Cette stabilité peut être interprétée positivement — absence de panique vendeuse — "
+        f"ou négativement — faiblesse des convictions acheteuses. "
+        f"La profondeur de marché reste préservée, ce qui facilite les ajustements tactiques de portefeuille "
+        f"sans impact majeur sur les prix. "
+        f"La direction du prochain mouvement de capitalisation sera un indicateur avancé "
+        f"de la tendance de l'indice dans les semaines à venir."
+    )
 
 
 # ── Extraction texte source ───────────────────────────────────────────────────
@@ -384,17 +583,48 @@ def _no_data(text) -> str:
     return s
 
 
-# ── Section 1 — En-tête + Synthèse générale ──────────────────────────────────
+# ── Fonctions d'extraction et de synthèse ────────────────────────────────────
 
-def _section_entete_synthese(doc, d, date_str: str):
-    p_hdr = doc.add_paragraph()
-    p_hdr.paragraph_format.space_before = Pt(0)
-    p_hdr.paragraph_format.space_after = Pt(10)
-    run_dest = p_hdr.add_run(_DESTINATAIRE + "\n")
-    run_dest.bold = True
-    run_dest.font.size = Pt(11)
-    run_date = p_hdr.add_run(f"Date : {date_str}")
-    run_date.font.size = Pt(10)
+def extract_brvm_index_data(data: dict) -> dict:
+    """Extrait les champs de l'indice BRVM Composite depuis les données structurées."""
+    return {
+        "niveau":    _s(data, "brvm_composite"),
+        "variation": _s(data, "brvm_variation"),
+        "perf_100j": _s(data, "perf_historique_100j"),
+        "plus_haut": _s(data, "brvm_composite_plus_haut_100j"),
+        "plus_bas":  _s(data, "brvm_composite_plus_bas_100j"),
+        "tendance":  _s(data, "brvm_composite_tendance"),
+        "range":     _s(data, "brvm_composite_100j"),
+    }
+
+
+def extract_market_cap_data(data: dict) -> dict:
+    """Extrait les champs de la capitalisation boursière depuis les données structurées."""
+    return {
+        "valeur":    _s(data, "capitalisation"),
+        "evolution": _s(data, "capitalisation_evolution_100j"),
+        "pic":       _s(data, "capitalisation_pic_100j"),
+        "plancher":  _s(data, "capitalisation_plancher_100j"),
+    }
+
+
+def summarize_section(items: list, fmt_fn, max_items: int = 5) -> list:
+    """Retourne les max_items premiers éléments formatés par fmt_fn."""
+    return [fmt_fn(item) for item in items[:max_items] if item]
+
+
+# ── Section 1 — En-tête institutionnel ───────────────────────────────────────
+
+def _section_entete(doc, d, date_str: str):
+    """Section 1 — En-tête institutionnel."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(12)
+    r1 = p.add_run(_DESTINATAIRE + "\n")
+    r1.bold = True
+    r1.font.size = Pt(11)
+    r2 = p.add_run(f"Date : {date_str}")
+    r2.font.size = Pt(10)
 
     pi = d.get("_period_info")
     if pi and pi.get("nb_seances", 1) > 1:
@@ -408,383 +638,711 @@ def _section_entete_synthese(doc, d, date_str: str):
             9, "283593",
         )
 
-    _heading(doc, "SYNTHÈSE GÉNÉRALE")
 
-    brvm = _s(d, "brvm_composite")
-    variation = _s(d, "brvm_variation")
-    perf = _s(d, "perf_historique_100j")
-    plus_haut = _s(d, "brvm_composite_plus_haut_100j")
-    plus_bas = _s(d, "brvm_composite_plus_bas_100j")
-    tendance = _s(d, "brvm_composite_tendance")
-    range_100j = _s(d, "brvm_composite_100j")
+def _section_brvm_composite(doc, d):
+    """Section 2 — Indice BRVM Composite sur 100 jours."""
+    _heading(doc, "ÉVOLUTION DE L'INDICE BRVM COMPOSITE (100 JOURS)")
 
-    texte_composite = (
-        f"Le BRVM Composite s'établit à {brvm} points, enregistrant une variation journalière de {variation}. "
-        f"Sur les 100 derniers jours, l'indice a progressé de {perf}, évoluant entre un plus bas "
-        f"de {plus_bas} et un plus haut de {plus_haut} points. "
-        f"La tendance générale est {tendance}."
+    # ── Données préalables
+    idx = extract_brvm_index_data(d)
+    nb_achat = _s(d, "nb_achat", "—")
+    nb_neutre = _s(d, "nb_neutre", "—")
+    nb_vente = _s(d, "nb_vente", "—")
+    sentiment = _s(d, "sentiment", "Neutre")
+    t = str(idx["tendance"]).lower()
+    top_opp = _s(d, "top_opportunite", None)
+
+    # ── Blocs exécutifs (lecture prioritaire)
+    _bloc(
+        doc, "POINT CLÉ :",
+        f"Indice à {idx['niveau']} pts | Tendance : {idx['tendance']} | Perf 100j : {idx['perf_100j']} | "
+        f"Sentiment : {sentiment} | {nb_achat} signaux ACHAT — {nb_vente} signaux VENTE.",
+        "E8F0FB", "1558A7",
     )
-    if range_100j != "—":
-        texte_composite += f" L'amplitude observée sur la période est : {range_100j}."
-    _para(doc, texte_composite)
+    if "haussier" in t:
+        opp_msg = f"{top_opp} identifiée comme valeur prioritaire. " if top_opp and top_opp != "—" else ""
+        _bloc(doc, "OPPORTUNITÉ :",
+              f"{opp_msg}Marché haussier : maintenir les positions. "
+              f"Renforcer les titres à score ≥ 70/100 au-dessus de leur MM50.",
+              "E8F8F0", "155724")
+    elif "baissier" in t:
+        _bloc(doc, "RISQUE :",
+              "Tendance baissière confirmée. "
+              "Réduire les expositions. Renforcer le cash. "
+              "Ne pas moyenner à la baisse.",
+              "FFF0E6", "C0392B")
+    else:
+        _bloc(doc, "RISQUE :",
+              "Marché en consolidation. Pas de signal directionnel franc. "
+              "Attendre la confirmation avant toute prise de position.",
+              "FFEB9C", "7D6608")
 
-    p_ph1 = doc.add_paragraph()
-    p_ph1.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p_ph1.add_run("[Courbe d'évolution de l'indice composite sur les 100 derniers jours]")
-    r.italic = True
-    r.font.size = Pt(9)
-    r.font.color.rgb = _rgb("888888")
+    # ── Synthèse exécutive
+    _sep_synthese(doc)
+    _para(doc,
+          f"L'indice clôture à {idx['niveau']} points ({idx['variation']} sur la séance). "
+          f"Performance sur 100 jours : {idx['perf_100j']}. "
+          f"Amplitude : {idx['plus_bas']} → {idx['plus_haut']} points. "
+          + (f"Range observé : {idx['range']}." if idx["range"] != "—" else ""))
+    _para(doc,
+          f"Signaux agrégés : {nb_achat} ACHAT — {nb_neutre} NEUTRE — {nb_vente} VENTE. "
+          f"Sentiment dominant : {sentiment}. "
+          f"Cette répartition est cohérente avec la tendance {idx['tendance']} de l'indice.")
 
+    # ── Analyse détaillée
+    _sep_detail(doc)
+    _para(doc, _interp_tendance(idx["tendance"], idx["perf_100j"]))
+
+    # ── Graphique
+    _graph_ph(doc, "[Courbe d'évolution de l'indice BRVM Composite sur les 100 derniers jours avec prédictions]")
+    _graph_lecture(doc, _lecture_graph_indice(idx))
+
+
+def _section_capitalisation(doc, d):
+    """Section 3 — Capitalisation boursière globale."""
+    _heading(doc, "ÉVOLUTION DE LA CAPITALISATION GLOBALE")
+
+    # ── Données préalables
+    cap = extract_market_cap_data(d)
+    evolution = str(cap.get("evolution") or "").strip()
+
+    # ── Blocs exécutifs
+    if evolution.startswith("+"):
+        _bloc(doc, "OPPORTUNITÉ :",
+              f"Capitalisation en hausse de {evolution}. "
+              f"Marché en création de valeur nette. "
+              f"Contexte favorable à l'accumulation sur les valeurs à score élevé.",
+              "E8F8F0", "155724")
+    elif evolution.startswith("-"):
+        _bloc(doc, "RISQUE :",
+              f"Capitalisation en recul de {evolution}. "
+              f"Sortie nette de capitaux. "
+              f"Réduire le dimensionnement des positions. Privilégier les titres liquides.",
+              "FFF0E6", "C0392B")
+    else:
+        _bloc(doc, "POINT CLÉ :",
+              f"Capitalisation stable à {cap['valeur']}. "
+              f"Équilibre acheteurs/vendeurs. "
+              f"Attendre le prochain signal directionnel avant toute décision d'allocation.",
+              "E8F0FB", "1558A7")
+
+    # ── Synthèse exécutive
+    _sep_synthese(doc)
+    _para(doc, f"Capitalisation totale BRVM : {cap['valeur']}.")
+    if evolution != "—":
+        parts = [f"Évolution 100j : {evolution}."]
+        if cap["pic"] != "—":
+            parts.append(f"Pic : {cap['pic']}.")
+        if cap["plancher"] != "—":
+            parts.append(f"Plancher : {cap['plancher']}.")
+        _para(doc, "  ".join(parts))
+
+    # ── Analyse détaillée
+    _sep_detail(doc)
+    if evolution.startswith("+"):
+        _para(doc,
+              "La hausse de la capitalisation traduit une création de richesse nette pour les actionnaires. "
+              "Elle améliore la profondeur du marché. "
+              "Un marché plus capitalisé est moins sujet aux distorsions de prix. "
+              "Les conditions d'exécution s'améliorent pour les institutionnels. "
+              "Ce signal est cohérent avec la tendance haussière de l'indice composite.")
+    elif evolution.startswith("-"):
+        _para(doc,
+              "Le recul de la capitalisation reflète une pression vendeuse dominante. "
+              "La profondeur de marché se réduit. "
+              "L'impact prix des transactions importantes s'accentue. "
+              "Ce contexte exige une révision des seuils de risque et une gestion active de la liquidité.")
+    else:
+        _para(doc,
+              "La stabilité de la capitalisation indique un équilibre des flux. "
+              "La profondeur de marché est préservée. "
+              "L'attentisme des opérateurs suggère une attente de signal directionnel. "
+              "La direction du prochain mouvement sera un indicateur avancé de tendance.")
+
+    # ── Graphique
+    _graph_ph(doc, "[Courbe d'évolution de la capitalisation boursière sur les 100 derniers jours]")
+    _graph_lecture(doc, _lecture_graph_capi(cap))
     doc.add_paragraph()
 
-    capi = _s(d, "capitalisation")
-    capi_evol = _s(d, "capitalisation_evolution_100j")
-    capi_pic = _s(d, "capitalisation_pic_100j")
-    capi_plancher = _s(d, "capitalisation_plancher_100j")
 
-    texte_capi = f"La capitalisation boursière globale s'élève à {capi}."
-    if capi_evol != "—":
-        texte_capi += f" Sur les 100 derniers jours, elle a évolué de {capi_evol}"
-        if capi_pic != "—" and capi_plancher != "—":
-            texte_capi += f", avec un pic à {capi_pic} et un plancher à {capi_plancher}."
-        elif capi_pic != "—":
-            texte_capi += f", avec un pic à {capi_pic}."
-        elif capi_plancher != "—":
-            texte_capi += f", avec un plancher à {capi_plancher}."
-        else:
-            texte_capi += "."
-    _para(doc, texte_capi)
-
-    p_ph2 = doc.add_paragraph()
-    p_ph2.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r2 = p_ph2.add_run("[Courbe d'évolution de la capitalisation sur les 100 derniers jours]")
-    r2.italic = True
-    r2.font.size = Pt(9)
-    r2.font.color.rgb = _rgb("888888")
-
-
-# ── Section 2 — Analyse par secteur ──────────────────────────────────────────
+# ── Section 4 — Analyse sectorielle ──────────────────────────────────────────
 
 def _section_secteurs(doc, d):
+    """Section 4 — Analyse sectorielle."""
     _heading(doc, "ANALYSE PAR SECTEUR")
-
-    _para(doc,
-        "Cette section présente une analyse comparative de tous les secteurs représentés "
-        "à la BRVM, incluant la performance moyenne, le sentiment général du marché et "
-        "le niveau de risque moyen."
-    )
-
     secteurs = _sl(d, "secteurs")
     if not secteurs:
-        _para(doc, "Données sectorielles non disponibles.")
+        _para(doc, "Données sectorielles non disponibles dans le rapport source.")
         return
 
+    # ── Calculs préalables
     def _perf_float(s):
         try:
             return float(str(s.get("perf_100j", "0")).replace("%", "").replace("+", "").replace(",", "."))
         except (ValueError, TypeError):
             return 0.0
 
-    for s in sorted(secteurs, key=_perf_float, reverse=True):
-        nom = s.get("secteur", "—")
-        nb = s.get("nb_societes", "—")
-        perf = s.get("perf_100j", "—")
-        vs = s.get("vs_brvm", "—")
-        position = s.get("position", "—")
-        sentiment = s.get("sentiment", "—")
-        risque = s.get("risque", "—")
-        prix = s.get("prix_moyen", "—")
-        societes = s.get("societes", [])
+    tries = sorted(secteurs, key=_perf_float, reverse=True)
+    leader = tries[0] if tries else None
+    laggard = tries[-1] if len(tries) > 1 else None
+    nb_total = len(secteurs)
+    sentiments = [str(s.get("sentiment", "")) for s in secteurs if s.get("sentiment")]
+    nb_pos = sum(1 for s in sentiments if "positif" in s.lower() or "favorable" in s.lower())
 
-        indicateur = "🟢 Surperformance" if "Surperformance" in str(position) else "🔴 Sous-performance"
-        societes_str = ", ".join(str(x) for x in societes) if societes else "—"
+    # ── Blocs exécutifs
+    if leader:
+        _bloc(doc, "OPPORTUNITÉ :",
+              f"Secteur leader : {leader.get('secteur', '—')} ({leader.get('perf_100j', '—')}, "
+              f"{leader.get('vs_brvm', '—')} vs BRVM). "
+              f"Momentum acheteur concentré ici. Renforcer les meilleures valeurs du secteur.",
+              "E8F8F0", "155724")
+    if laggard and laggard.get("secteur") != (leader or {}).get("secteur"):
+        _bloc(doc, "RISQUE :",
+              f"Secteur en difficulté : {laggard.get('secteur', '—')} ({laggard.get('perf_100j', '—')}). "
+              f"Ne pas moyenner à la baisse. Réallouer vers les secteurs en surperformance.",
+              "FFF0E6", "C0392B")
+    _bloc(doc, "POINT CLÉ :",
+          f"{nb_pos}/{nb_total} secteurs affichent un sentiment positif. "
+          f"La sélection sectorielle est le principal levier de surperformance dans ce contexte.",
+          "E8F0FB", "1558A7")
 
-        texte = (
-            f"Le secteur {nom} regroupe {nb} société(s) avec une performance moyenne de {perf} "
-            f"sur 100 jours, soit {vs} par rapport au BRVM Composite. "
-            f"Le sentiment général est {sentiment} avec un risque moyen {risque} "
-            f"et un prix moyen de {prix} FCFA. {indicateur}. "
-            f"Sociétés concernées : {societes_str}."
-        )
-        _heading(doc, nom, 2)
-        _para(doc, texte)
+    # ── Synthèse exécutive
+    _sep_synthese(doc)
+    _para(doc,
+          f"{nb_total} secteurs couverts. "
+          f"{nb_pos} affichent un sentiment positif. "
+          + (f"Leader : {leader.get('secteur', '—')} à {leader.get('perf_100j', '—')}. " if leader else "")
+          + (f"Laggard : {laggard.get('secteur', '—')} à {laggard.get('perf_100j', '—')}." if laggard and laggard.get("secteur") != (leader or {}).get("secteur") else ""))
+
+    # ── Tableau de synthèse sectorielle
+    if len(secteurs) > 1:
+        tbl = doc.add_table(rows=1, cols=5)
+        tbl.style = "Table Grid"
+        _tbl_header(tbl, ["Secteur", "Perf 100j", "vs BRVM", "Sentiment", "Risque"], "1A73E8", "FFFFFF")
+        for s in tries:
+            row = tbl.add_row()
+            row.cells[0].text = str(s.get("secteur") or "—")
+            row.cells[1].text = str(s.get("perf_100j") or "—")
+            row.cells[2].text = str(s.get("vs_brvm") or "—")
+            row.cells[3].text = str(s.get("sentiment") or "—")
+            row.cells[4].text = str(s.get("risque") or "—")
+            pf = _perf_float(s)
+            _cell_bg(row.cells[1], "C6EFCE" if pf > 0 else ("FFC7CE" if pf < 0 else "FFEB9C"))
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        r.font.size = Pt(8.5)
+        doc.add_paragraph()
+
+    # ── Analyse détaillée
+    _sep_detail(doc)
+
+    if leader:
+        leader_socs = ", ".join((leader.get("societes") or [])[:4]) or "—"
+        _heading(doc, f"Secteur leader : {leader.get('secteur', '—')}", 2)
+        _para(doc,
+              f"Performance 100j : {leader.get('perf_100j', '—')} — soit {leader.get('vs_brvm', '—')} vs BRVM Composite. "
+              f"Sentiment : {leader.get('sentiment', '—')}. Risque : {leader.get('risque', '—')}. "
+              f"{leader.get('nb_societes', '—')} sociétés cotées, dont : {leader_socs}.")
+        _para(doc,
+              "Ce secteur est le moteur principal de la progression du marché. "
+              "Il capte une part disproportionnée des flux acheteurs institutionnels. "
+              "Toute révision d'allocation doit y prioriser les valeurs à score composite ≥ 70/100.")
+
+    if laggard and laggard.get("secteur") != (leader or {}).get("secteur"):
+        _heading(doc, f"Secteur en difficulté : {laggard.get('secteur', '—')}", 2)
+        _para(doc,
+              f"Performance 100j : {laggard.get('perf_100j', '—')}. "
+              f"Risque : {laggard.get('risque', '—')}.")
+        _para(doc,
+              "Sous-performance pouvant résulter de facteurs structurels (pression réglementaire, érosion des marges) "
+              "ou conjoncturels (choc macro, déficit de liquidité). "
+              "Procéder à une réévaluation rigoureuse des positions existantes. "
+              "Biais de réduction progressive si les signaux ne s'améliorent pas sous 30 jours.")
+
+    macro_uemoa = _s(d, "macro_uemoa")
+    if macro_uemoa and macro_uemoa != "—":
+        _para(doc,
+              f"Lien macro : cette dynamique sectorielle s'inscrit dans un contexte UEMOA marqué par "
+              f"{str(macro_uemoa)[:180]}. "
+              "(Voir section Analyse Macro pour le détail complet.)")
+
+    top5 = _sl(d, "top5_opportunites")
+    if top5:
+        _para(doc, "Opportunités cross-sectorielles : "
+              + ", ".join(f"{x.get('symbole', '—')} — {x.get('raison', '—')[:50]}" for x in top5[:3])
+              + ".")
 
 
-# ── Section 3 — Analyse de liquidité ─────────────────────────────────────────
+# ── Section 5 — Analyse de liquidité ─────────────────────────────────────────
 
 def _section_liquidite(doc, d):
+    """Section 5 — Analyse de liquidité."""
     _heading(doc, "ANALYSE DE LIQUIDITÉ")
 
-    _para(doc,
-        "L'analyse de liquidité classe les titres selon leur accessibilité sur le marché. "
-        "Les titres à haute liquidité offrent des conditions d'entrée et de sortie favorables, "
-        "tandis que les titres à faible liquidité présentent un risque de sortie significatif "
-        "pouvant affecter les conditions d'exécution des ordres."
-    )
-
-    _heading(doc, "Titres à Haute Liquidité", 2)
+    # ── Données préalables
     haute = _sl(d, "liquidite_haute")
+    risque_l = _sl(d, "liquidite_risque")
+    matrice = _sl(d, "matrice_risques")
+
+    # ── Blocs exécutifs
     if haute:
-        for item in haute:
-            sym = item.get("symbole", "—")
-            vol = item.get("volume_moyen") or item.get("detail", "—")
-            val = item.get("valeur_moyenne", "")
-            perf = item.get("perf_100j", "")
-            reco = item.get("recommandation", "")
+        syms_haute = ", ".join(item.get("symbole", "—") for item in haute[:4])
+        _bloc(doc, "OPPORTUNITÉ :",
+              f"Titres à haute liquidité : {syms_haute}. "
+              f"Candidats naturels pour les prises de position de taille. "
+              f"Priorité : ceux combinant liquidité élevée + score ≥ 70/100.",
+              "E8F8F0", "155724")
+    if risque_l:
+        sym_risque = ", ".join(item.get("symbole", "—") for item in risque_l[:3])
+        _bloc(doc, "RISQUE :",
+              f"Liquidité insuffisante sur : {sym_risque}. "
+              f"Risque de slippage et de blocage. "
+              f"Plafond recommandé : 2-3% du portefeuille par titre illiquide.",
+              "FFF0E6", "C0392B")
 
-            parts = [f"{sym} affiche un volume moyen de {vol}"]
-            if val:
-                parts.append(f"pour une valeur moyenne de {val}")
-            if perf:
-                parts.append(f"une performance sur 100 jours de {perf}")
-            if reco:
-                parts.append(f"recommandation : {reco}")
-            _para(doc, ". ".join(parts) + ".")
-    else:
-        _para(doc, "Aucun titre à haute liquidité identifié.")
-
-    _heading(doc, "Titres à Faible Liquidité — Risque Élevé", 2)
-    risque = _sl(d, "liquidite_risque")
-    if risque:
-        for item in risque:
-            sym = item.get("symbole", "—")
-            vol = item.get("volume_moyen") or item.get("detail", "—")
-            val = item.get("valeur_moyenne", "")
-            perf = item.get("perf_100j", "")
-            reco = item.get("recommandation", "")
-
-            parts = [f"{sym} présente un volume moyen limité à {vol}"]
-            if val:
-                parts.append(f"valeur moyenne de {val}")
-            if perf:
-                parts.append(f"performance sur 100 jours de {perf}")
-            if reco:
-                parts.append(f"recommandation : {reco}")
-            _para(doc, ". ".join(parts) + ".")
-    else:
-        _para(doc, "Aucun titre à risque liquidité identifié.")
-
+    # ── Synthèse exécutive
+    _sep_synthese(doc)
     _para(doc,
-        "Avertissement : les titres à faible liquidité peuvent présenter des écarts "
-        "importants entre les prix d'achat et de vente, et les ordres de sortie peuvent "
-        "nécessiter plusieurs séances pour être exécutés. Une attention particulière est "
-        "recommandée lors de toute prise de position sur ces valeurs."
-    )
+          f"{len(haute)} titre(s) à haute liquidité identifiés. "
+          f"{len(risque_l)} titre(s) à liquidité risquée. "
+          "La liquidité conditionne directement la flexibilité tactique du portefeuille.")
+    _para(doc,
+          "Trois risques opérationnels à surveiller : "
+          "(1) slippage — écart entre prix théorique et prix d'exécution réel ; "
+          "(2) blocage — impossibilité de sortir rapidement en cas de retournement ; "
+          "(3) distorsion de prix — les volumes faibles amplifient l'impact des ordres importants.")
+
+    # ── Analyse détaillée
+    _sep_detail(doc)
+
+    if haute:
+        _heading(doc, "Titres à haute liquidité — opportunités opérationnelles", 2)
+        _para(doc,
+              "Ces valeurs permettent entrées et sorties sans impact prix significatif. "
+              "Elles constituent le socle des portefeuilles institutionnels. "
+              "Flexibilité tactique optimale pour la gestion active.")
+        tbl = doc.add_table(rows=1, cols=4)
+        tbl.style = "Table Grid"
+        _tbl_header(tbl, ["Symbole", "Volume moyen / jour", "Perf 100j", "Recommandation"], "1A73E8", "FFFFFF")
+        for item in haute[:6]:
+            row = tbl.add_row()
+            row.cells[0].text = str(item.get("symbole") or "—")
+            row.cells[1].text = str(item.get("volume_moyen") or item.get("valeur_moyenne") or item.get("detail") or "—")
+            row.cells[2].text = str(item.get("perf_100j") or "—")
+            reco = str(item.get("recommandation") or "—")
+            row.cells[3].text = reco
+            _cell_bg(row.cells[3], _reco_color(reco))
+            perf_str = str(item.get("perf_100j") or "")
+            _cell_bg(row.cells[2], "C6EFCE" if perf_str.startswith("+") else ("FFC7CE" if perf_str.startswith("-") else "FFEB9C"))
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        r.font.size = Pt(8.5)
+        doc.add_paragraph()
+    else:
+        _para(doc, "Aucun titre à haute liquidité identifié dans le rapport source.")
+
+    if risque_l:
+        _heading(doc, "Titres à liquidité risquée — contraintes opérationnelles", 2)
+        _para(doc,
+              "Volumes insuffisants pour absorber des ordres institutionnels sans distorsion de prix. "
+              "Toute position doit être fractionnée sur plusieurs séances. "
+              "Dimensionnement extrêmement prudent. "
+              "Le coût de sortie doit être intégré dès l'entrée en position.")
+        tbl2 = doc.add_table(rows=1, cols=4)
+        tbl2.style = "Table Grid"
+        _tbl_header(tbl2, ["Symbole", "Volume moyen / jour", "Perf 100j", "Recommandation"], "C0392B", "FFFFFF")
+        for item in risque_l[:6]:
+            row = tbl2.add_row()
+            row.cells[0].text = str(item.get("symbole") or "—")
+            row.cells[1].text = str(item.get("volume_moyen") or item.get("valeur_moyenne") or item.get("detail") or "—")
+            row.cells[2].text = str(item.get("perf_100j") or "—")
+            reco = str(item.get("recommandation") or "—")
+            row.cells[3].text = reco
+            _cell_bg(row.cells[3], _reco_color(reco))
+            _cell_bg(row.cells[0], "FFF0E6")
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        r.font.size = Pt(8.5)
+        doc.add_paragraph()
+
+    if _sl(d, "secteurs") and haute:
+        _para(doc,
+              "Corrélation liquidité/secteur : les titres les plus liquides appartiennent généralement "
+              "aux secteurs les plus capitalisés. "
+              "Surpondérer les secteurs leaders cumule double avantage : "
+              "meilleures perspectives de performance ET flexibilité opérationnelle supérieure. "
+              "(Cf. Analyse par Secteur pour les détails.)")
+
+    if matrice:
+        _para(doc, "Matrice de risque synthétique : "
+              + " | ".join(
+                  f"{m.get('symbole', '—')} [{m.get('risque', '—')} / horizon {m.get('horizon', '—')}]"
+                  for m in matrice[:5]) + ".")
 
 
-# ── Section 4 — Analyse macro ─────────────────────────────────────────────────
+# ── Section 6 — Analyse macro ────────────────────────────────────────────────
 
 def _section_macro(doc, d):
+    """Section 6 — Contexte macro international, africain & UEMOA."""
     _heading(doc, "ANALYSE MACRO — CONTEXTE INTERNATIONAL, AFRICAIN & UEMOA")
 
-    for label, key in [
-        ("Contexte international", "macro_international"),
-        ("Contexte africain", "macro_africain"),
-        ("Contexte UEMOA", "macro_uemoa"),
-    ]:
-        _heading(doc, label, 2)
-        _para(doc, _no_data(_s(d, key)).replace("★", "").strip())
+    # ── Données préalables
+    def _val(key, max_chars=300):
+        v = _s(d, key)
+        if not v or v in ("—", "null", "None"):
+            return None
+        v = v.replace("★", "").strip()
+        return v[:max_chars].rstrip() + ("…" if len(v) > max_chars else "")
 
-    _heading(doc, "Impacts sur le marché BRVM", 2)
-    for label, key in [
-        ("Impact sur les bourses mondiales", "impact_bourses_mondiales"),
-        ("Impact sur les indicateurs BRVM", "impact_indicateurs_brvm"),
-        ("Impact sur les sociétés cotées", "impact_societes_cotees"),
-    ]:
-        p = doc.add_paragraph()
-        p.paragraph_format.space_after = Pt(4)
-        p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        _bold(p, f"{label} : ", 10)
-        _normal(p, _no_data(_s(d, key)).replace("★", "").strip(), 10)
+    reco_macro = _val("recommandation_macro", 250)
+    risques_macro = _sl(d, "risques")
+    opps_macro = _sl(d, "opportunites_majeures")
+    secteurs = _sl(d, "secteurs")
+    leader_nom = "—"
+    if secteurs:
+        def _pf(s):
+            try:
+                return float(str(s.get("perf_100j", "0")).replace("%", "").replace("+", "").replace(",", "."))
+            except (ValueError, TypeError):
+                return 0.0
+        leader_nom = sorted(secteurs, key=_pf, reverse=True)[0].get("secteur", "—")
 
-    for label, key in [("Synthèse macro", "synthese_macro"), ("Recommandation", "recommandation_macro")]:
-        val = _no_data(_s(d, key))
-        if val != "Aucune information significative n'a été collectée sur ce point.":
-            _heading(doc, label, 2)
-            _para(doc, val.replace("★", "").strip())
+    # ── Blocs exécutifs
+    _bloc(doc, "POINT CLÉ :",
+          (reco_macro or "Surveiller l'évolution du contexte macro pour ajuster l'exposition.")
+          + f" Secteur le plus exposé : {leader_nom}.",
+          "E8F0FB", "1558A7")
+    if risques_macro:
+        _bloc(doc, "RISQUE :",
+              "Risques identifiés : " + " — ".join(str(r)[:80] for r in risques_macro[:3]) + ".",
+              "FFF0E6", "C0392B")
+    if opps_macro:
+        _bloc(doc, "OPPORTUNITÉ :",
+              "Opportunités identifiées : " + " — ".join(str(o)[:80] for o in opps_macro[:3]) + ".",
+              "E8F8F0", "155724")
+
+    # ── Synthèse exécutive
+    _sep_synthese(doc)
+    parts_synth = []
+    ctx_intl_s = _val("macro_international", 120)
+    if ctx_intl_s:
+        parts_synth.append(f"International : {ctx_intl_s}")
+    ctx_afr_s = _val("macro_africain", 120)
+    if ctx_afr_s:
+        parts_synth.append(f"Afrique : {ctx_afr_s}")
+    ctx_uemoa_s = _val("macro_uemoa", 120)
+    if ctx_uemoa_s:
+        parts_synth.append(f"UEMOA : {ctx_uemoa_s}")
+    if parts_synth:
+        _para(doc, "  |  ".join(parts_synth) + ".")
+    imp_synth = _val("impact_indicateurs_brvm", 180)
+    if imp_synth:
+        _para(doc, f"Impact BRVM : {imp_synth}")
+
+    # ── Analyse détaillée
+    _sep_detail(doc)
+    _para(doc,
+          "La BRVM n'est pas imperméable aux chocs macro-économiques globaux et africains. "
+          "Les flux de capitaux étrangers, les politiques monétaires de la BCEAO "
+          "et les dynamiques des autres places africaines influencent directement la valorisation des actifs. "
+          "L'analyse s'articule en trois niveaux imbriqués.")
+
+    ctx_intl = _val("macro_international")
+    if ctx_intl:
+        _heading(doc, "Environnement international", 2)
+        _para(doc, ctx_intl)
+        impact_brvm = _val("impact_bourses_mondiales", 250)
+        if impact_brvm:
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(4)
+            p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            _bold(p, "Implication pour la BRVM : ", 10, "1558A7")
+            _normal(p, impact_brvm, 10)
+
+    ctx_afr = _val("macro_africain")
+    if ctx_afr:
+        _heading(doc, "Environnement africain et régional", 2)
+        _para(doc, ctx_afr)
+
+    ctx_uemoa = _val("macro_uemoa")
+    if ctx_uemoa:
+        _heading(doc, "Zone UEMOA — facteurs de proximité", 2)
+        _para(doc, ctx_uemoa)
+
+    imp_indic = _val("impact_indicateurs_brvm", 250)
+    imp_soc = _val("impact_societes_cotees", 250)
+    if imp_indic or imp_soc:
+        _heading(doc, "Impacts directs sur la BRVM", 2)
+        if imp_indic:
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(4)
+            p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            _bold(p, "Sur les indicateurs de marché : ", 10)
+            _normal(p, imp_indic, 10)
+        if imp_soc:
+            p2 = doc.add_paragraph()
+            p2.paragraph_format.space_after = Pt(4)
+            p2.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            _bold(p2, "Sur les sociétés cotées : ", 10)
+            _normal(p2, imp_soc, 10)
+
+    sources = _sl(d, "sources_macro")
+    if sources:
+        _para(doc, "Sources : "
+              + " | ".join(f"{src.get('source', '—')} — {str(src.get('resume') or '—')[:80]}"
+                           for src in sources[:4]) + ".")
+
+    synthese = _val("synthese_macro", 350)
+    if synthese:
+        _heading(doc, "Synthèse macro et positionnement", 2)
+        _para(doc, synthese)
+
+    if secteurs and leader_nom != "—":
+        _para(doc,
+              f"Lien sectoriel : le secteur {leader_nom} (leader de performance) "
+              f"est directement exposé aux conditions macro décrites ci-dessus. "
+              "Calibrer l'exposition en intégrant simultanément signaux techniques, "
+              "fondamentaux sectoriels et contexte macro.")
 
 
-# ── Section 5 — Actualités du marché BRVM ────────────────────────────────────
+# ── Section 7 — Actualités du marché BRVM ────────────────────────────────────
 
 def _section_actualites(doc, d):
+    """Section 7 — Actualités du marché BRVM."""
     _heading(doc, "ACTUALITÉS DU MARCHÉ BRVM")
 
-    type_labels = {
-        "AG": "Assemblées Générales",
-        "AVIS": "Avis",
-        "COMMUNIQUÉ": "Communiqués",
-        "COMMUNIQUE": "Communiqués",
-        "DIVIDENDE": "Dividendes",
-        "DIVIDENDES": "Dividendes",
-        "RÉSULTAT": "Résultats",
-        "RESULTAT": "Résultats",
-        "RÉSULTATS": "Résultats",
-        "RESULTATS": "Résultats",
-    }
-
+    # ── Données préalables
     docs_off = _sl(d, "documents_officiels")
-    if docs_off:
-        grouped = defaultdict(list)
-        for item in docs_off:
-            grouped[str(item.get("type") or "Autre").upper()].append(item)
-
-        for type_key, items in grouped.items():
-            _heading(doc, type_labels.get(type_key, type_key.capitalize()), 2)
-            for item in items:
-                societe = item.get("societe") or "—"
-                date_doc = item.get("date") or "—"
-                detail = item.get("detail") or "—"
-                _para(doc, f"Le {date_doc}, {societe} : {detail}")
-    else:
-        _para(doc, "Aucun document officiel recensé pour cette période.")
-
     alertes = _sl(d, "alertes_google")
-    if alertes:
-        _heading(doc, "Alertes Google", 2)
-        _para(doc, "Les alertes suivantes ont été collectées et regroupées par thème.")
+    top_opp = _s(d, "top_opportunite")
+    div = _s(d, "principale_divergence")
 
-        theme_groups = defaultdict(list)
-        for item in alertes:
-            theme_groups[str(item.get("mot_cle") or "Général")].append(item)
+    # ── Blocs exécutifs
+    if top_opp and top_opp != "—":
+        _bloc(doc, "OPPORTUNITÉ :",
+              f"{top_opp} : valeur prioritaire sur signaux croisés (technique + fondamental + marché). "
+              f"Signal d'achat conditionnel — confirmer sur 2 séances avant renforcement.",
+              "E8F8F0", "155724")
+    if div and div != "—":
+        _bloc(doc, "POINT CLÉ :",
+              f"Divergence identifiée : {str(div)[:180]}. "
+              "À intégrer dans toute décision d'allocation.",
+              "E8F0FB", "1558A7")
 
-        for theme, items in theme_groups.items():
-            _heading(doc, theme, 3)
-            for item in items:
-                sent = str(item.get("sentiment", "neutre")).lower()
-                emoji = "🟢" if sent == "positif" else ("🔴" if sent in ("negatif", "négatif") else "⚪")
-                resume = item.get("resume") or "—"
-                score = item.get("score_pertinence", "")
-                texte = f"{emoji} {resume}"
-                if score:
-                    texte += f" (pertinence : {score}/10)"
-                _para(doc, texte)
+    # ── Synthèse exécutive
+    _sep_synthese(doc)
+    nb_docs = len(docs_off)
+    nb_alertes = len(alertes)
+    _para(doc,
+          f"{nb_docs} événement(s) corporate recensé(s). "
+          f"{nb_alertes} signal(s) de veille presse. "
+          + (f"Valeur focus : {top_opp}." if top_opp and top_opp != "—" else ""))
+
+    # ── Analyse détaillée
+    _sep_detail(doc)
+
+    if docs_off:
+        _heading(doc, "Événements corporate et documents officiels", 2)
+        _para(doc,
+              "Les événements corporate (AG, résultats, dividendes, avertissements) sont des catalyseurs directs. "
+              "Ils peuvent déclencher des mouvements de cours significatifs à court terme.")
+        tbl = doc.add_table(rows=1, cols=4)
+        tbl.style = "Table Grid"
+        _tbl_header(tbl, ["Type", "Société", "Date", "Détail / Impact"], "1A73E8", "FFFFFF")
+        for item in docs_off[:8]:
+            row = tbl.add_row()
+            row.cells[0].text = str(item.get("type") or "Document").capitalize()
+            row.cells[1].text = str(item.get("societe") or "—")
+            row.cells[2].text = str(item.get("date") or "—")
+            row.cells[3].text = str(item.get("detail") or "—")[:120]
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        r.font.size = Pt(8.5)
+        doc.add_paragraph()
     else:
-        _para(doc, "Aucune alerte Google recensée pour cette période.")
+        _para(doc, "Aucun événement corporate significatif recensé pour cette période.")
+
+    if alertes:
+        _heading(doc, "Veille presse et signaux d'actualité", 2)
+        _para(doc,
+              "Signaux d'information classés par sentiment et score de pertinence. "
+              "Ces signaux influencent la perception des investisseurs à court terme.")
+        for item in alertes[:5]:
+            sent = str(item.get("sentiment", "")).lower()
+            score = item.get("score_pertinence", "—")
+            mot_cle = str(item.get("mot_cle") or "—")
+            resume = str(item.get("resume") or "—")[:200]
+            prefixe = "POSITIF" if sent == "positif" else ("NÉGATIF" if "neg" in sent else "NEUTRE")
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(3)
+            p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r_label = p.add_run(f"[{prefixe} — {mot_cle} | Pertinence : {score}/10]  ")
+            r_label.bold = True
+            r_label.font.size = Pt(9)
+            r_txt = p.add_run(resume)
+            r_txt.font.size = Pt(9)
+        doc.add_paragraph()
+
+    if not docs_off and not alertes:
+        _para(doc, "Aucune actualité significative recensée pour cette période.")
+
+    if top_opp and top_opp != "—":
+        _heading(doc, "Valeur focus", 2)
+        _para(doc,
+              f"{top_opp} cumule des signaux croisés favorables. "
+              "Technique, fondamental et contexte de marché convergent. "
+              "Surveiller les catalyseurs imminents (résultats, annonce, volume inhabituel). "
+              "Valider le scénario sur 2 séances consécutives avant tout renforcement.")
 
 
-# ── Section 6 — Alertes du jour ──────────────────────────────────────────────
+# ── Section 10 — Alertes stratégiques ────────────────────────────────────────
 
 def _section_alertes(doc, d):
-    _heading(doc, "ALERTES DU JOUR")
+    """Section 10 — Alertes stratégiques."""
+    _heading(doc, "ALERTES STRATÉGIQUES DU JOUR")
 
-    _para(doc,
-        "Les sociétés suivantes présentent des signaux extrêmes ou des incohérences "
-        "majeures nécessitant une attention particulière."
-    )
-
+    # ── Données préalables
     surachat = _sl(d, "rsi_surachat")
     survente = _sl(d, "rsi_survente")
     divergences = _sl(d, "divergences_tech_fond")
+    cours_bornes = _sl(d, "cours_bornes_100j")
+    valeur_eviter = _s(d, "valeur_a_eviter")
+    nb_surachat = len(surachat)
+    nb_survente = len(survente)
+    nb_div = len(divergences)
+    principale_div = _s(d, "principale_divergence")
 
-    if surachat:
-        _heading(doc, "Titres en surachat (RSI > 70)", 2)
-        for item in surachat:
-            sym = item.get("symbole", "—")
-            rsi = item.get("rsi", "—")
-            cours_max = item.get("cours_100j_max", "")
-            signal_tech = item.get("signal_tech", "")
-            signal_fond = item.get("signal_fond", "")
-            reco = item.get("reco", "")
-            detail = item.get("detail", "")
+    # ── Blocs exécutifs
+    if nb_surachat > nb_survente and nb_surachat > 0:
+        syms_sa = ", ".join(item.get("symbole", "—") for item in surachat[:3])
+        _bloc(doc, "RISQUE :",
+              f"{nb_surachat} signal(s) de surachat ({syms_sa}). "
+              "Surextension technique. Ne pas renforcer. Sécuriser les plus-values.",
+              "FFF0E6", "C0392B")
+    if nb_survente > 0:
+        syms_sv = ", ".join(item.get("symbole", "—") for item in survente[:3])
+        _bloc(doc, "OPPORTUNITÉ :",
+              f"Survente sur {syms_sv}. "
+              "Points d'entrée potentiels si fondamentaux solides. "
+              "Confirmer sur 2 séances avant action.",
+              "E8F8F0", "155724")
+    if principale_div and principale_div != "—":
+        _bloc(doc, "POINT CLÉ :",
+              f"Divergence principale : {str(principale_div)[:180]}. "
+              "Signal structurel majeur — à peser dans toute décision d'allocation.",
+              "E8F0FB", "1558A7")
 
-            texte = f"{sym} affiche un RSI en zone de surachat à {rsi}"
-            if cours_max:
-                texte += f", avec un cours au plus haut sur 100 jours à {cours_max} FCFA"
-            if signal_tech and signal_fond:
-                texte += (
-                    f" et une divergence entre signal technique de {signal_tech} "
-                    f"et fondamental de {signal_fond}"
-                )
-            elif detail:
-                texte += f" — {detail}"
-            if reco:
-                texte += f" — recommandation maintenue à {reco}"
-            _para(doc, texte + ".")
+    # ── Synthèse exécutive
+    _sep_synthese(doc)
+    total_alertes = nb_surachat + nb_survente + nb_div + len(cours_bornes) + (1 if valeur_eviter and valeur_eviter != "—" else 0)
+    _para(doc,
+          f"{total_alertes} alerte(s) identifiée(s) : "
+          f"{nb_surachat} surachat — {nb_survente} survente — {nb_div} divergence(s).")
+    if nb_surachat > nb_survente:
+        _para(doc, "Profil dominant : surachat. Risque de correction à court terme accru. Sécuriser les positions.")
+    elif nb_survente > nb_surachat:
+        _para(doc, "Profil dominant : survente. Opportunités potentielles sur les valeurs à bons fondamentaux.")
+    else:
+        _para(doc, "Alertes équilibrées. Gestion au cas par cas — pas de biais directionnel dominant.")
 
-    if survente:
-        _heading(doc, "Titres en survente (RSI < 30) — Opportunités potentielles", 2)
-        for item in survente:
-            sym = item.get("symbole", "—")
-            rsi = item.get("rsi", "—")
-            cours_min = item.get("cours_100j_min", "")
-            signal_tech = item.get("signal_tech", "")
-            signal_fond = item.get("signal_fond", "")
-            reco = item.get("reco", "")
-            detail = item.get("detail", "")
+    # ── Tableau des alertes
+    _sep_detail(doc)
+    _para(doc,
+          "Chaque alerte requiert une vérification complémentaire avant exécution. "
+          "Un signal RSI n'invalide pas les fondamentaux — croiser avec le score composite.")
 
-            texte = f"{sym} présente un RSI en zone de survente à {rsi}"
-            if cours_min:
-                texte += f", avec un cours proche de son plus bas sur 100 jours à {cours_min} FCFA"
-            if signal_tech and signal_fond:
-                texte += f", signal technique de {signal_tech} et fondamental de {signal_fond}"
-            elif detail:
-                texte += f" — {detail}"
-            if reco:
-                texte += f" — recommandation : {reco}"
-            _para(doc, texte + ".")
+    # ── Construction du tableau
+    rows = []
 
-    if divergences:
-        _heading(doc, "Autres divergences techniques/fondamentales", 2)
-        for item in divergences:
-            sym = item.get("symbole", "—")
-            reco = item.get("reco", "—")
-            detail = item.get("detail", "—")
-            _para(doc, f"{sym} [{reco}] : {detail}.")
+    for item in surachat[:3]:
+        sym = item.get("symbole", "—")
+        rsi = item.get("rsi", "—")
+        cours_max = item.get("cours_100j_max", "—")
+        sig_tech = item.get("signal_tech", "—")
+        sig_fond = item.get("signal_fond", "—")
+        reco = item.get("reco", "—")
+        detail = str(item.get("detail") or "")[:100]
+        titre = f"{sym}  RSI : {rsi} | Cours max 100j : {cours_max}"
+        if detail:
+            titre += f" | {detail}"
+        action = (
+            f"Ne pas renforcer. Envisager une réduction partielle. "
+            f"Signal tech : {sig_tech} / Signal fond : {sig_fond}. Reco : {reco}."
+        )
+        rows.append(("⚠  Surachat RSI", titre, action, "FFC7CE"))
 
-    if not surachat and not survente and not divergences:
-        _para(doc, "Aucune alerte majeure identifiée pour cette séance.")
+    for item in survente[:3]:
+        sym = item.get("symbole", "—")
+        rsi = item.get("rsi", "—")
+        cours_min = item.get("cours_100j_min", "—")
+        sig_tech = item.get("signal_tech", "—")
+        sig_fond = item.get("signal_fond", "—")
+        reco = item.get("reco", "—")
+        detail = str(item.get("detail") or "")[:100]
+        titre = f"{sym}  RSI : {rsi} | Cours min 100j : {cours_min}"
+        if detail:
+            titre += f" | {detail}"
+        action = (
+            f"Surveiller le signal de rebond — entrée progressive si confirmation. "
+            f"Signal tech : {sig_tech} / Signal fond : {sig_fond}. Reco : {reco}."
+        )
+        rows.append(("✔  Survente RSI", titre, action, "C6EFCE"))
 
+    for item in divergences[:2]:
+        sym = item.get("symbole", "—")
+        reco = item.get("reco", "—")
+        detail = str(item.get("detail") or "—")[:120]
+        titre = f"{sym}  {detail}"
+        action = (
+            f"Approche mixte requise : ne pas agir sur le seul signal technique. "
+            f"Attendre convergence technique + fondamental. Reco : {reco}."
+        )
+        rows.append(("↕  Divergence Tech/Fond", titre, action, "FFEB9C"))
 
-# ── Section 7 — Conclusion ────────────────────────────────────────────────────
+    for item in cours_bornes[:1]:
+        sym = item.get("symbole", "—")
+        detail = str(item.get("detail") or "—")[:120]
+        titre = f"{sym}  {detail}"
+        rows.append(("📊  Cours en borne", titre, "Surveiller le franchissement — point de bascule imminent.", "E8F0FB"))
 
-def _section_conclusion(doc, d, date_str: str):
-    _heading(doc, "CONCLUSION")
+    if valeur_eviter and valeur_eviter != "—":
+        rows.append((
+            "✖  Valeur à éviter",
+            f"{valeur_eviter} — Signaux cumulés négatifs",
+            "Sortir ou ne pas initier de position. Risque global élevé.",
+            "FFC7CE",
+        ))
 
-    sentiment = _s(d, "conclusion_sentiment") or _s(d, "sentiment")
-    _para(doc, f"Le marché BRVM affiche un sentiment global {sentiment}.")
+    # ── Tableau des alertes
+    if rows:
+        tbl = doc.add_table(rows=1, cols=3)
+        tbl.style = "Table Grid"
+        _tbl_header(tbl, ["Type d'alerte", "Valeur / Signal", "Action recommandée"], "C0392B", "FFFFFF")
+        for signal, titre, action, bg in rows:
+            row = tbl.add_row()
+            row.cells[0].text = signal
+            row.cells[1].text = titre
+            row.cells[2].text = action
+            _cell_bg(row.cells[0], bg)
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        r.font.size = Pt(8.5)
+        doc.add_paragraph()
+    else:
+        _para(doc, "Aucune alerte stratégique majeure identifiée pour cette séance.")
 
-    top3_opp = _sl(d, "top3_opportunites_conclusion") or _sl(d, "opportunites_majeures")
-    if top3_opp:
-        _heading(doc, "Top 3 opportunités du jour", 2)
-        for i, item in enumerate(top3_opp[:3], 1):
-            if isinstance(item, dict):
-                sym = item.get("symbole", "—")
-                raison = item.get("raison", "—")
-                _para(doc, f"{i}. {sym} : {raison}")
-            else:
-                _para(doc, f"{i}. {item}")
-
-    top3_risques = _sl(d, "top3_risques_conclusion") or _sl(d, "risques")
-    if top3_risques:
-        _heading(doc, "Top 3 risques à surveiller", 2)
-        for i, item in enumerate(top3_risques[:3], 1):
-            if isinstance(item, dict):
-                risque = item.get("risque", "—")
-                detail = item.get("detail", "")
-                _para(doc, f"{i}. {risque}" + (f" : {detail}" if detail else ""))
-            else:
-                _para(doc, f"{i}. {item}")
-
-    reco_finale = _no_data(_s(d, "recommandation_finale"))
-    if reco_finale != "Aucune information significative n'a été collectée sur ce point.":
-        _heading(doc, "Recommandation générale", 2)
-        _para(doc, reco_finale)
-
-    doc.add_paragraph()
-    p_disc = doc.add_paragraph(
-        "Cette note est produite à titre indicatif. Les analyses ne constituent pas des "
-        "conseils en investissement. Tout investissement comporte des risques de perte en "
-        "capital. Usage strictement réservé aux professionnels habilités."
-    )
-    for run in p_disc.runs:
-        run.font.size = Pt(9)
-        run.font.color.rgb = _rgb("666666")
-        run.italic = True
-
-    doc.add_paragraph()
-    p_sig = doc.add_paragraph()
-    _bold(p_sig, f"Note générée le {date_str}  —  Agent GitHub Rapports BRVM", 9)
-    p_sig.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    # ── Recommandation de lecture croisée
+    if nb_surachat + nb_survente + nb_div > 0:
+        _para(doc,
+              "Recommandation transversale : croiser systématiquement chaque signal d'alerte "
+              "avec le score composite (Classement 47 sociétés) avant toute décision. "
+              "Un RSI en surachat sur un titre à score 80/100 et fondamentaux solides "
+              "a un profil de risque très différent d'un titre à score 30/100.")
 
 
 # ── Classement 47 sociétés ────────────────────────────────────────────────────
@@ -869,15 +1427,16 @@ def _build_docx(data: dict, date_str: str) -> bytes:
 
     _setup_header_footer(doc, date_str)
 
-    _section_entete_synthese(doc, data, date_str)
-    _section_secteurs(doc, data)
-    _section_liquidite(doc, data)
-    _section_macro(doc, data)
-    _section_actualites(doc, data)
-    _section_alertes(doc, data)
-    _section_conclusion(doc, data, date_str)
-    _section_classement(doc, data)
-    _section_portefeuilles(doc, data)
+    _section_entete(doc, data, date_str)       # 1 — En-tête institutionnel
+    _section_brvm_composite(doc, data)         # 2 — Indice BRVM Composite (100j)
+    _section_capitalisation(doc, data)         # 3 — Capitalisation globale
+    _section_secteurs(doc, data)               # 4 — Analyse sectorielle
+    _section_liquidite(doc, data)              # 5 — Analyse de liquidité
+    _section_macro(doc, data)                  # 6 — Contexte macro + impacts BRVM
+    _section_actualites(doc, data)             # 7 — Actualités du marché
+    _section_classement(doc, data)             # 8 — Classement sociétés /100
+    _section_portefeuilles(doc, data)          # 9 — Portefeuilles modèles
+    _section_alertes(doc, data)                # 10 — Alertes du jour
 
     buf = io.BytesIO()
     doc.save(buf)

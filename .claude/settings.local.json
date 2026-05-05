@@ -6,7 +6,12 @@
       "Bash(echo \"error: $?\")",
       "Bash(where gh *)",
       "PowerShell(Get-Command *)",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\POUSSI\\\\Documents\\\\06. Mes Agents\\\\04. Agent GitHub Rapports\" -Recurse)",
+      "Bash(Select-Object FullName)",
+      "Bash(python -c \"import generate_note_strategique; print\\('OK'\\)\")",
+      "Bash(python -m py_compile generate_note_strategique.py)",
+      "Bash(python -m py_compile generate_fiches_societes.py)"
     ]
   }
 }
