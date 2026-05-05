@@ -807,7 +807,7 @@ def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> list:
     print(f"  [Fiches/{freq}] LLM → {len(raw_companies)} société(s) extraite(s).")
 
     if not raw_companies:
-        print(f"  [Fiches/{freq}] AVERTISSEMENT : aucune société extraite, abandon.")
+        print(f"  [Fiches/{freq}] ERREUR : extraction invalide ou aucune société — abandon (voir logs Extractor).")
         return []
 
     print(f"  [Fiches/{freq}] Étape 3/3 : Enrichissement Python + génération Word...")

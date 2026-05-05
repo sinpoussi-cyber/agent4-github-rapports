@@ -11,7 +11,9 @@
       "Bash(Select-Object FullName)",
       "Bash(python -c \"import generate_note_strategique; print\\('OK'\\)\")",
       "Bash(python -m py_compile generate_note_strategique.py)",
-      "Bash(python -m py_compile generate_fiches_societes.py)"
+      "Bash(python -m py_compile generate_fiches_societes.py)",
+      "Bash(python -c \"import extractor; print\\('OK — module chargé sans erreur'\\)\")",
+      "Bash(python -c \"from extractor import extract_all, clean_text, split_text_sections, build_ticker_context; print\\('Toutes les fonctions publiques importées OK'\\)\")"
     ]
   }
 }

@@ -1,7 +1,7 @@
 """
 Couche d'extraction LLM.
-Responsabilité unique : appeler Claude et retourner un JSON minimal par société.
-Champs retournés : ticker, nom, secteur, cours, var_1j, reco, score.
+Pipeline : nettoyage -> segmentation -> extraction JSON ciblée par société.
+Champs : ticker, nom, secteur, cours, var_1j, reco, score, mm, boll, macd, rsi, stoch.
 """
 import json
 import os
@@ -16,36 +16,253 @@ _MODEL = "claude-sonnet-4-20250514"
 _BATCH_SIZE = 3
 _MAX_RETRIES = 3
 
+# Seuils validation qualité
+_MAX_NULL_RATIO = 0.5
+_MIN_SCORE_RATIO = 0.3
 
-# ── Utilitaires JSON ──────────────────────────────────────────────────────────
+# Limites de taille par appel LLM
+_MAX_CHARS_TICKERS   = 25_000
+_MAX_CHARS_BRVM_GLOB = 15_000
+_MAX_CHARS_BATCH     = 20_000
+_CHARS_PER_TICKER    =  4_000  # fenêtre extraite autour de chaque occurrence de ticker
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NETTOYAGE DU TEXTE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_EMOJI_RE = re.compile(
+    "[\U0001F300-\U0001F5FF\U0001F600-\U0001F64F\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF"
+    "\U00002702-\U000027B0\U000024C2-\U0001F251]+",
+    flags=re.UNICODE,
+)
+_DECO_LINE_RE  = re.compile(r'^[ \t]*[=\-\*_#~\|]{4,}[ \t]*$', re.MULTILINE)
+_PAGE_NO_RE    = re.compile(r'^\s*\d{1,3}\s*$', re.MULTILINE)
+_MULTI_SPC_RE  = re.compile(r'[ \t]{2,}')
+_MULTI_NL_RE   = re.compile(r'\n{3,}')
+
+
+def clean_text(text: str) -> str:
+    """
+    Supprime :
+    - emojis et symboles Unicode décoratifs
+    - lignes de séparation pure (====, ----)
+    - numéros de page isolés
+    - espaces multiples
+    - lignes consécutives identiques (headers répétés)
+    """
+    size_before = len(text)
+
+    text = _EMOJI_RE.sub(" ", text)
+    text = _DECO_LINE_RE.sub("", text)
+    text = _PAGE_NO_RE.sub("", text)
+    text = _MULTI_SPC_RE.sub(" ", text)
+    text = _MULTI_NL_RE.sub("\n\n", text)
+
+    # Dédupliquer les lignes consécutives identiques
+    lines, deduped, prev = text.split('\n'), [], None
+    for line in lines:
+        stripped = line.strip()
+        if stripped and stripped == prev:
+            continue
+        deduped.append(line)
+        if stripped:
+            prev = stripped
+
+    text = '\n'.join(deduped).strip()
+    reduction = (1 - len(text) / max(size_before, 1)) * 100
+    print(f"  [TextClean] {size_before:,} -> {len(text):,} chars ({reduction:.1f}% reduit)")
+    return text
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEGMENTATION EN SECTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_COMPANY_SECTION_RE = re.compile(
+    r'(analyse\s+(individuelle|par\s+soci[eé]t[eé]|des\s+valeurs)|'
+    r'fiche\s+(individuelle|par\s+valeur|soci[eé]t[eé])|'
+    r'recommandations?\s+d[eé]taill[eé]|'
+    r'top\s+(opportunit|valeur|titre)|'
+    r'soci[eé]t[eé]s?\s+analys|'
+    r'analyse\s+technique\s+et\s+fondamentale)',
+    re.IGNORECASE,
+)
+_NEWS_SECTION_RE = re.compile(
+    r'(actualit[eé]s?\s*(du\s+march[eé])?|communiqu[eé]s?\s+de\s+presse|'
+    r'news\s+du\s+march[eé]|informations?\s+boursi[eè]res?)',
+    re.IGNORECASE,
+)
+# Ligne contenant un ticker uppercase + un prix ou une recommandation
+_TICKER_DATA_RE = re.compile(
+    r'\b[A-Z]{2,8}\b.{0,60}?(\d{3,}|ACHAT|VENTE|NEUTRE)',
+    re.IGNORECASE,
+)
+
+
+def split_text_sections(text: str) -> dict:
+    """
+    Segmente le texte nettoyé en trois sections logiques.
+
+    Stratégie de détection (ordre de priorité) :
+    1. Marqueurs de section explicites (regex)
+    2. Première ligne ticker + données financières (après 10 % du texte)
+    3. Fallback positionnel : 25 % globale / 75 % sociétés
+
+    Retourne :
+    {
+        "brvm_global"  : str,   # indice, capitalisation, données macro
+        "societes"     : str,   # données par entreprise
+        "actualites"   : str,   # news (peut être vide)
+        "full_clean"   : str,   # texte complet nettoyé
+        "stats"        : dict,
+    }
+    """
+    lines = text.split('\n')
+    n = len(lines)
+
+    brvm_end      = None
+    company_start = None
+    news_start    = None
+
+    for i, line in enumerate(lines):
+        if news_start is None and _NEWS_SECTION_RE.search(line):
+            news_start = i
+
+        if company_start is None and _COMPANY_SECTION_RE.search(line):
+            company_start = i
+            brvm_end = brvm_end or i
+
+        # Transition ticker+données détectée après les 10 premières %
+        if company_start is None and i > n * 0.10 and _TICKER_DATA_RE.search(line):
+            company_start = i
+            brvm_end = brvm_end or i
+
+    # Fallback positionnel
+    if company_start is None:
+        brvm_end      = max(1, n // 4)
+        company_start = brvm_end
+
+    brvm_section    = '\n'.join(lines[:brvm_end]).strip()
+    company_section = '\n'.join(
+        lines[company_start: (news_start if news_start else n)]
+    ).strip()
+    news_section    = '\n'.join(lines[news_start:]).strip() if news_start else ""
+
+    stats = {
+        "total_chars"       : len(text),
+        "brvm_global_chars" : len(brvm_section),
+        "societes_chars"    : len(company_section),
+        "actualites_chars"  : len(news_section),
+        "total_lines"       : n,
+        "brvm_end_line"     : brvm_end,
+        "company_start_line": company_start,
+        "news_start_line"   : news_start,
+    }
+
+    print(f"  [TextSplit] {n} lignes, {len(text):,} chars au total — "
+          f"{len([s for s in [brvm_section, company_section, news_section] if s])} section(s) détectée(s)")
+    print(f"  [TextSplit] BRVM global : {stats['brvm_global_chars']:,} chars "
+          f"(lignes 0 -> {brvm_end})")
+    print(f"  [TextSplit] Sociétés   : {stats['societes_chars']:,} chars "
+          f"(lignes {company_start} -> {news_start or n})")
+    if news_section:
+        print(f"  [TextSplit] Actualités : {stats['actualites_chars']:,} chars")
+
+    return {
+        "brvm_global" : brvm_section,
+        "societes"    : company_section,
+        "actualites"  : news_section,
+        "full_clean"  : text,
+        "stats"       : stats,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXTRACTION CONTEXTE CIBLÉ PAR TICKER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_ticker_context(sections: dict, tickers: list) -> str:
+    """
+    Pour chaque ticker, extrait une fenêtre de _CHARS_PER_TICKER chars autour
+    de ses occurrences dans le texte.
+
+    Ordre de recherche : section "societes" -> texte complet (fallback).
+    Retourne un texte ciblé < _MAX_CHARS_BATCH chars.
+    """
+    societes_text = sections.get("societes") or ""
+    full_text     = sections.get("full_clean", "")
+    contexts      = []
+    half          = _CHARS_PER_TICKER // 2
+
+    for ticker in tickers:
+        pat = re.compile(r'\b' + re.escape(ticker) + r'\b')
+
+        source, label = societes_text, "sociétés"
+        matches = list(pat.finditer(source))
+        if not matches:
+            source, label = full_text, "complet"
+            matches = list(pat.finditer(source))
+
+        if matches:
+            snippets = []
+            for m in matches[:2]:  # Au plus 2 occurrences par ticker
+                start = max(0, m.start() - half)
+                end   = min(len(source), m.end() + half)
+                snippets.append(source[start:end])
+            ctx = f"=== {ticker} (section {label}) ===\n" + "\n[...]\n".join(snippets)
+        else:
+            print(f"  [TickerCtx] '{ticker}' introuvable dans le texte")
+            ctx = f"=== {ticker} : non trouvé dans le rapport ==="
+
+        contexts.append(ctx)
+
+    combined = "\n\n".join(contexts)[:_MAX_CHARS_BATCH]
+    print(f"  [TickerCtx] Contexte pour {tickers} : {len(combined):,} chars")
+    return combined
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UTILITAIRES JSON
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def clean_json_string(raw: str) -> str:
-    """Nettoie une réponse LLM pour isoler un tableau JSON valide."""
+    """Nettoie la réponse LLM pour isoler un tableau JSON valide."""
     raw = re.sub(r"```json\s*", "", raw)
     raw = re.sub(r"```\s*", "", raw)
-    # "nul" seul → "null"  (évite de toucher à "null" existant ou des mots comme "nulité")
     raw = re.sub(r'(?<!["\w])nul(?![\w"l])', "null", raw)
-    start = raw.find("[")
-    end = raw.rfind("]") + 1
+    start, end = raw.find("["), raw.rfind("]") + 1
     if start == -1 or end == 0:
         return raw
     return raw[start:end]
 
 
 def safe_json_load(text: str) -> list:
-    """Parse JSON en retournant [] en cas d'erreur de parsing."""
     try:
         result = json.loads(text)
         return result if isinstance(result, list) else []
     except (json.JSONDecodeError, ValueError) as e:
         print(f"  [Extractor/JSON] Erreur parsing : {e}")
+        print(f"  [Extractor/JSON] Texte reçu : {text[:200]}")
         return []
 
 
-# ── Extraction des tickers ────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXTRACTION LLM
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def get_tickers(full_text: str) -> list:
-    """Appelle le LLM pour extraire la liste des tickers BRVM présents dans le texte."""
+def get_tickers(sections: dict) -> list:
+    """
+    Identifie les tickers BRVM depuis la section sociétés.
+    Utilise au plus _MAX_CHARS_TICKERS chars pour couvrir tous les tickers
+    même dans un rapport long.
+    """
+    text = sections.get("societes") or sections.get("full_clean", "")
+    snippet = text[:_MAX_CHARS_TICKERS]
+
+    print(f"  [Extractor/Tickers] Texte utilisé : {len(snippet):,} chars")
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     msg = client.messages.create(
         model=_MODEL,
@@ -55,119 +272,264 @@ def get_tickers(full_text: str) -> list:
             "content": (
                 "Extrais UNIQUEMENT la liste des tickers/symboles boursiers de toutes "
                 "les sociétés BRVM présentes dans ce rapport.\n"
-                "Réponds UNIQUEMENT avec du JSON valide. Ne mets aucun texte hors JSON.\n"
-                "Utilise null et jamais nul pour les valeurs absentes.\n"
-                'Retourne UNIQUEMENT ce JSON : {"tickers": ["SGBCI", "SONATEL", ...]}\n\n'
-                f"RAPPORT :\n{full_text[:20000]}"
+                "Réponds UNIQUEMENT avec du JSON valide. Aucun texte hors JSON.\n"
+                'Retourne UNIQUEMENT : {"tickers": ["SGBCI", "SONATEL", ...]}\n\n'
+                f"RAPPORT :\n{snippet}"
             ),
         }],
     )
     raw = msg.content[0].text.strip()
     print(f"  [Extractor/Tickers] Réponse ({len(raw)} chars) : {raw[:200]}")
-    cleaned = re.sub(r"```json\s*", "", raw)
-    cleaned = re.sub(r"```\s*", "", cleaned).strip()
-    start, end = cleaned.find("{"), cleaned.rfind("}") + 1
-    if start == -1 or end == 0:
-        print("  [Extractor/Tickers] ERREUR : aucun objet JSON trouvé")
+    cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip()
+    s, e = cleaned.find("{"), cleaned.rfind("}") + 1
+    if s == -1 or e == 0:
+        print("  [Extractor/Tickers] ERREUR : aucun objet JSON")
         return []
     try:
-        tickers = json.loads(cleaned[start:end]).get("tickers", [])
-        print(f"  [Extractor/Tickers] {len(tickers)} ticker(s) : {tickers[:10]}")
+        tickers = json.loads(cleaned[s:e]).get("tickers", [])
+        print(f"  [Extractor/Tickers] {len(tickers)} ticker(s) : {tickers[:15]}")
         return tickers
-    except json.JSONDecodeError as e:
-        print(f"  [Extractor/Tickers] JSONDecodeError : {e}")
+    except json.JSONDecodeError as e2:
+        print(f"  [Extractor/Tickers] JSONDecodeError : {e2}")
         return []
 
 
-# ── Extraction par batch ──────────────────────────────────────────────────────
-
-def extract_batch(full_text: str, tickers: list, freq: str = "JOUR", period_info: dict = None) -> list:
+def extract_brvm_global(sections: dict) -> dict:
     """
-    Extrait les données minimales pour un batch de sociétés (max _BATCH_SIZE).
-    Retourne une liste de dicts {ticker, nom, secteur, cours, var_1j, reco, score}.
-    Retry jusqu'à _MAX_RETRIES fois. Fallback minimal si tout échoue.
+    Extrait les données de marché globales BRVM.
+    Utilise uniquement la section brvm_global (courte et ciblée).
+    """
+    brvm_text = sections.get("brvm_global") or sections.get("full_clean", "")
+    snippet   = brvm_text[:_MAX_CHARS_BRVM_GLOB]
+    print(f"  [Extractor/BRVM] Section globale : {len(brvm_text):,} chars -> envoi {len(snippet):,} chars")
+
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    prompt = (
+        "Tu analyses un rapport boursier BRVM. Extrais les données globales du marché.\n\n"
+        "RÈGLES STRICTES :\n"
+        "- Réponds UNIQUEMENT en JSON valide (objet {}).\n"
+        "- Utilise null pour toute valeur absente — NE PAS inventer.\n\n"
+        "Schéma attendu :\n"
+        "{\n"
+        '  "brvm_composite"  : "valeur ou variation du BRVM Composite",\n'
+        '  "perf_100j"       : "performance sur 100 jours ou période disponible",\n'
+        '  "signaux_achat"   : <entier ou null>,\n'
+        '  "signaux_vente"   : <entier ou null>,\n'
+        '  "signaux_neutre"  : <entier ou null>,\n'
+        '  "top_opportunite" : "ticker ou nom de la meilleure opportunité",\n'
+        '  "secteur_leader"  : "secteur le plus performant"\n'
+        "}\n\n"
+        f"TEXTE SOURCE :\n{snippet}"
+    )
+    try:
+        msg = client.messages.create(
+            model=_MODEL, max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw     = msg.content[0].text.strip()
+        cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip()
+        s, e    = cleaned.find("{"), cleaned.rfind("}") + 1
+        if s != -1 and e > 0:
+            data = json.loads(cleaned[s:e])
+            print(f"  [Extractor/BRVM] Données : {data}")
+            return data
+    except Exception as exc:
+        print(f"  [Extractor/BRVM] Erreur : {exc}")
+    return {}
+
+
+def extract_batch(sections: dict, tickers: list,
+                  freq: str = "JOUR", period_info: dict = None) -> list:
+    """
+    Extrait les données complètes pour un batch de tickers.
+    Utilise le contexte ciblé (build_ticker_context) plutôt que le texte brut complet.
+    max_tokens = 2048 pour accueillir toutes les données sans troncature.
     """
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     period_ctx = ""
     if freq != "JOUR":
-        _descs = {
-            "HEBDO": "7 derniers jours",
-            "MENSUEL": "30 derniers jours",
-            "TRIM": "dernier trimestre",
-            "ANNUEL": "dernière année",
-        }
+        _descs = {"HEBDO": "7 derniers jours", "MENSUEL": "30 derniers jours",
+                  "TRIM": "dernier trimestre", "ANNUEL": "dernière année"}
         nb = (period_info or {}).get("nb_seances", "?")
-        period_ctx = f"Période analysée : {_descs.get(freq, freq)} ({nb} séances).\n"
+        period_ctx = f"Période : {_descs.get(freq, freq)} ({nb} séances).\n"
+
+    ticker_context = build_ticker_context(sections, tickers)
+    tickers_str    = ", ".join(tickers)
 
     prompt = (
         f"{period_ctx}"
-        f"Rapport BRVM — Extrais les données des sociétés suivantes : {', '.join(tickers)}\n\n"
-        f"RAPPORT :\n{full_text[:35000]}\n\n"
-        "CONTRAINTES STRICTES :\n"
-        "- Réponds UNIQUEMENT en JSON valide.\n"
-        "- Pas de texte, commentaire ou explication hors du JSON.\n"
-        "- Utilise null (JAMAIS nul) pour toutes les valeurs absentes.\n"
-        "- La réponse doit commencer par [ et terminer par ].\n\n"
-        "Schéma attendu — retourne UNIQUEMENT ce tableau JSON :\n"
-        "[\n"
-        '  {"ticker": "SGBCI", "nom": "Société Générale de Banques", "secteur": "Banque",\n'
-        '   "cours": "14500", "var_1j": "+0.5%", "reco": "ACHAT", "score": 82},\n'
-        '  {"ticker": "SONATEL", "nom": "Sonatel", "secteur": "Télécommunications",\n'
-        '   "cours": "18000", "var_1j": "-0.3%", "reco": "NEUTRE", "score": 65}\n'
-        "]\n"
+        f"Tu analyses un rapport boursier BRVM. "
+        f"Extrais les données RÉELLES des sociétés : {tickers_str}\n\n"
+        "RÈGLES STRICTES :\n"
+        "1. Réponds UNIQUEMENT en JSON. Commence par [ et termine par ].\n"
+        "2. null (JAMAIS 0 par défaut) pour toute valeur absente dans le texte.\n"
+        "3. 'score' est OBLIGATOIRE et ne peut pas être 0 :\n"
+        "   ACHAT -> >= 60 | NEUTRE -> 40-59 | VENTE -> <= 39\n"
+        "   Si un score explicite est dans le texte, utilise-le.\n"
+        "4. 'cours' : cours actuel en FCFA (nombre, sans unité).\n"
+        "5. 'var_1j' : variation avec signe (ex: '+0.5%', '-1.2%').\n"
+        "6. mm/boll/macd/rsi/stoch : 'haussier', 'neutre' ou 'baissier'. "
+        "null si non mentionné.\n\n"
+        "Schéma exact :\n"
+        '[\n  {"ticker":"SGBCI","nom":"Société Générale","secteur":"Banque",'
+        '"cours":14500,"var_1j":"+0.5%","reco":"ACHAT","score":82,'
+        '"mm":"haussier","boll":"neutre","macd":"haussier","rsi":"neutre","stoch":"haussier"}\n]\n\n'
+        f"TEXTE SOURCE :\n{ticker_context}"
     )
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             msg = client.messages.create(
-                model=_MODEL,
-                max_tokens=512,
+                model=_MODEL, max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = msg.content[0].text.strip()
-            print(f"  [Extractor/Batch] Tentative {attempt}/{_MAX_RETRIES} — {len(raw)} chars")
+            print(f"  [Extractor/Batch] Tentative {attempt}/{_MAX_RETRIES} — "
+                  f"{len(raw)} chars reçus (prompt envoyé : {len(prompt):,} chars)")
 
             cleaned = clean_json_string(raw)
-            print(f"  [Extractor/Batch] JSON nettoyé ({len(cleaned)} chars) : {cleaned[:150]}")
-
-            parsed = safe_json_load(cleaned)
+            parsed  = safe_json_load(cleaned)
             if parsed:
-                print(f"  [Extractor/Batch] OK : {len(parsed)} société(s)")
+                print(f"  [Extractor/Batch] OK : {len(parsed)} société(s) parsée(s)")
                 return parsed
 
             print(f"  [Extractor/Batch] Résultat vide — tentative {attempt}/{_MAX_RETRIES}")
-        except Exception as e:
-            print(f"  [Extractor/Batch] Erreur tentative {attempt}/{_MAX_RETRIES} : {e}")
+        except Exception as exc:
+            print(f"  [Extractor/Batch] Erreur tentative {attempt} : {exc}")
 
-    print(f"  [Extractor/Batch] Toutes tentatives échouées — fallback pour : {tickers}")
-    return [{"ticker": t, "nom": t, "secteur": None, "cours": None, "var_1j": None,
-             "reco": "INCONNU", "score": 0} for t in tickers]
+    print(f"  [Extractor/Batch] Échec total — fallback pour : {tickers}")
+    return [
+        {"ticker": t, "nom": t, "secteur": None, "cours": None, "var_1j": None,
+         "reco": "INCONNU", "score": None,
+         "mm": None, "boll": None, "macd": None, "rsi": None, "stoch": None}
+        for t in tickers
+    ]
 
 
-# ── Pipeline complet d'extraction ────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# VALIDATION QUALITÉ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_CORE_FIELDS = ("ticker", "nom", "secteur", "cours", "var_1j", "reco", "score",
+                "mm", "boll", "macd", "rsi", "stoch")
+
+
+def _log_extraction_stats(companies: list) -> dict:
+    """Calcule et affiche les statistiques qualité."""
+    if not companies:
+        return {"null_ratio": 1.0, "score_nonzero_ratio": 0.0}
+
+    total   = len(companies) * len(_CORE_FIELDS)
+    nulls   = sum(1 for c in companies for f in _CORE_FIELDS if c.get(f) is None)
+    nonzero = sum(
+        1 for c in companies
+        if c.get("score") is not None and float(c.get("score") or 0) > 0
+    )
+    null_ratio  = nulls / total
+    score_ratio = nonzero / len(companies)
+
+    print(f"  [Extractor/Stats] Sociétés     : {len(companies)}")
+    print(f"  [Extractor/Stats] Champs null  : {nulls}/{total} ({null_ratio*100:.1f}%)")
+    print(f"  [Extractor/Stats] Scores > 0   : {nonzero}/{len(companies)} ({score_ratio*100:.1f}%)")
+    if companies:
+        print(f"  [Extractor/Debug] 1ère société : "
+              f"{json.dumps(companies[0], ensure_ascii=False)}")
+
+    return {"null_ratio": null_ratio, "score_nonzero_ratio": score_ratio}
+
+
+def validate_extraction(companies: list) -> bool:
+    """
+    Valide la qualité de l'extraction.
+    Bloque le pipeline si les données sont insuffisantes.
+    """
+    if not companies:
+        print("  [Extractor/Validation] ÉCHEC : aucune société extraite.")
+        return False
+
+    stats    = _log_extraction_stats(companies)
+    all_zero = all(
+        c.get("score") is None or float(c.get("score") or 0) == 0
+        for c in companies
+    )
+
+    if all_zero:
+        print("  [Extractor/Validation] ÉCHEC : tous les scores sont null/0.")
+        return False
+
+    if stats["null_ratio"] > _MAX_NULL_RATIO:
+        print(f"  [Extractor/Validation] ÉCHEC : {stats['null_ratio']*100:.1f}% de champs null "
+              f"(seuil {_MAX_NULL_RATIO*100:.0f}%).")
+        return False
+
+    print(f"  [Extractor/Validation] OK — {stats['score_nonzero_ratio']*100:.1f}% scores non nuls.")
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE COMPLET
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def extract_all(full_text: str, freq: str = "JOUR", period_info: dict = None) -> list:
     """
-    Pipeline : get_tickers() → extract_batch() par tranches de _BATCH_SIZE.
-    Retourne la liste brute des sociétés (JSON minimal).
+    Pipeline complet d'extraction :
+    0. Nettoyage du texte brut
+    1. Segmentation en sections (brvm_global / societes / actualites)
+    2. Extraction données BRVM globales (section brvm uniquement)
+    3. Identification des tickers (section sociétés, max 25k chars)
+    4. Extraction par batch avec contexte ciblé par ticker
+    5. Validation qualité -> stop si extraction invalide
     """
-    print("  [Extractor] Étape A : Récupération des tickers...")
-    tickers = get_tickers(full_text)
-    if not tickers:
-        print("  [Extractor] AVERTISSEMENT : aucun ticker trouvé.")
-        return []
-    print(f"  [Extractor] {len(tickers)} ticker(s) identifié(s).")
+    print(f"  [Extractor] Texte source brut : {len(full_text):,} chars")
 
-    all_companies = []
-    total_batches = (len(tickers) + _BATCH_SIZE - 1) // _BATCH_SIZE
+    # ── Étape 0 : Nettoyage
+    print("  [Extractor] Étape 0 : Nettoyage...")
+    clean = clean_text(full_text)
+
+    # ── Étape 1 : Segmentation
+    print("  [Extractor] Étape 1 : Segmentation...")
+    sections = split_text_sections(clean)
+
+    # ── Étape 2 : Données BRVM globales
+    print("  [Extractor] Étape 2 : Données BRVM globales...")
+    brvm_global = extract_brvm_global(sections)
+    if brvm_global:
+        print(f"  [Extractor] Composite      : {brvm_global.get('brvm_composite', 'N/A')}")
+        print(f"  [Extractor] Top opportunité: {brvm_global.get('top_opportunite', 'N/A')}")
+        print(f"  [Extractor] Secteur leader : {brvm_global.get('secteur_leader', 'N/A')}")
+    else:
+        print("  [Extractor] AVERTISSEMENT : données BRVM globales non extraites.")
+
+    # ── Étape 3 : Tickers
+    print("  [Extractor] Étape 3 : Identification des tickers...")
+    tickers = get_tickers(sections)
+    if not tickers:
+        print("  [Extractor] ERREUR : aucun ticker identifié — abandon.")
+        return []
+    print(f"  [Extractor] {len(tickers)} ticker(s) identifié(s) : {tickers[:15]}")
+
+    # ── Étape 4 : Extraction par batch
+    all_companies  = []
+    total_batches  = (len(tickers) + _BATCH_SIZE - 1) // _BATCH_SIZE
     for i in range(0, len(tickers), _BATCH_SIZE):
-        batch = tickers[i:i + _BATCH_SIZE]
+        batch     = tickers[i: i + _BATCH_SIZE]
         batch_num = i // _BATCH_SIZE + 1
-        print(f"  [Extractor] Étape B — Batch {batch_num}/{total_batches} : {', '.join(batch)}")
-        companies = extract_batch(full_text, batch, freq, period_info)
-        print(f"  [Extractor] Batch {batch_num} → {len(companies)} société(s) extraite(s)")
+        print(f"  [Extractor] Étape 4 — Batch {batch_num}/{total_batches} : {', '.join(batch)}")
+        companies = extract_batch(sections, batch, freq, period_info)
+        print(f"  [Extractor] Batch {batch_num} -> {len(companies)} société(s)")
         all_companies.extend(companies)
 
-    print(f"  [Extractor] Total LLM : {len(all_companies)} société(s) extraite(s).")
+    print(f"  [Extractor] Total brut : {len(all_companies)} société(s).")
+
+    # ── Étape 5 : Validation
+    print("  [Extractor] Étape 5 : Validation qualité...")
+    if not validate_extraction(all_companies):
+        print("  [Extractor] ERREUR : Extraction failed — pipeline interrompu.")
+        return []
+
+    if brvm_global:
+        for c in all_companies:
+            c["_brvm_global"] = brvm_global
+
     return all_companies
