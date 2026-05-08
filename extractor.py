@@ -415,6 +415,95 @@ def extract_batch(sections: dict, tickers: list,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# EXTRACTION COMPLÉMENTAIRE : COURS 100J + FONDAMENTAUX
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_EXTRA_FIELDS = (
+    "cours_debut", "cours_fin", "plus_haut_100j", "plus_bas_100j",
+    "perf_100j", "date_debut_100j", "date_fin_100j",
+    "ca", "ca_date", "resultat_net", "rn_date",
+    "marge_nette", "mn_date", "roe", "roe_date",
+    "roa", "roa_date", "dividende", "div_date",
+)
+
+
+def extract_extra(sections: dict, tickers: list) -> list:
+    """
+    Extrait les bornes de cours sur 100 jours et les indicateurs fondamentaux
+    (CA, résultat net, marge nette, ROE, ROA, dividende) avec leur date.
+    Pass séparé du batch principal pour isoler la complexité de cette extraction.
+    Retourne list[dict] indexé par ticker.
+    """
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    ticker_context = build_ticker_context(sections, tickers)
+    tickers_str = ", ".join(tickers)
+
+    prompt = (
+        "Tu analyses un rapport boursier BRVM. "
+        f"Pour chaque société : {tickers_str}, extrais les données suivantes.\n\n"
+        "RÈGLES STRICTES :\n"
+        "1. Réponds UNIQUEMENT en JSON valide, commençant par [ et terminant par ].\n"
+        "2. null pour toute valeur absente — JAMAIS d'invention.\n"
+        "3. Cours : nombres en FCFA sans unité ni séparateur (ex: 1440, 14500).\n"
+        "4. perf_100j : variation signée avec %, ex: '-7.29%', '+26.95%'.\n"
+        "5. Dates au format JJ/MM/AAAA ou AAAA-MM-JJ tel que dans le texte.\n"
+        "6. CA, résultat_net, dividende : conserve la valeur ET l'unité du texte "
+        "(ex: '42,45 milliards FCFA', '22,3 millions FCFA', '150 FCFA').\n"
+        "7. marge_nette / roe / roa : pourcentage avec %, ex: '6,9%', '1,46%'.\n\n"
+        "Schéma exact :\n"
+        "[\n"
+        '  {\n'
+        '    "ticker": "BNBC",\n'
+        '    "cours_debut": 1440, "cours_fin": 1335,\n'
+        '    "plus_haut_100j": 1785, "plus_bas_100j": 1335,\n'
+        '    "perf_100j": "-7.29%",\n'
+        '    "date_debut_100j": "2026-02-23", "date_fin_100j": "2026-05-07",\n'
+        '    "ca": "42,45 Mds FCFA", "ca_date": "31/12/2025",\n'
+        '    "resultat_net": "22,3 M FCFA", "rn_date": "31/12/2025",\n'
+        '    "marge_nette": "0,05%", "mn_date": "31/12/2025",\n'
+        '    "roe": null, "roe_date": null,\n'
+        '    "roa": null, "roa_date": null,\n'
+        '    "dividende": "Aucun", "div_date": "31/12/2025"\n'
+        "  }\n"
+        "]\n\n"
+        f"TEXTE SOURCE :\n{ticker_context}"
+    )
+
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            msg = client.messages.create(
+                model=_MODEL, max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = msg.content[0].text.strip()
+            print(f"  [Extractor/Extra] Tentative {attempt}/{_MAX_RETRIES} — "
+                  f"{len(raw)} chars reçus")
+            cleaned = clean_json_string(raw)
+            parsed = safe_json_load(cleaned)
+            if parsed:
+                print(f"  [Extractor/Extra] OK : {len(parsed)} société(s) parsée(s)")
+                return parsed
+            print(f"  [Extractor/Extra] Résultat vide — tentative {attempt}/{_MAX_RETRIES}")
+        except Exception as exc:
+            print(f"  [Extractor/Extra] Erreur tentative {attempt} : {exc}")
+
+    print(f"  [Extractor/Extra] Échec total — fallback vide pour : {tickers}")
+    return [{"ticker": t, **{f: None for f in _EXTRA_FIELDS}} for t in tickers]
+
+
+def _merge_extra(companies: list, extras: list) -> list:
+    """Fusionne par ticker les données extra dans les sociétés existantes."""
+    by_ticker = {str(e.get("ticker") or "").strip().upper(): e for e in extras if e.get("ticker")}
+    for c in companies:
+        t = str(c.get("ticker") or "").strip().upper()
+        ex = by_ticker.get(t) or {}
+        for f in _EXTRA_FIELDS:
+            if c.get(f) is None and ex.get(f) is not None:
+                c[f] = ex.get(f)
+    return companies
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # VALIDATION QUALITÉ
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -530,6 +619,11 @@ def extract_all(full_text: str, freq: str = "JOUR", period_info: dict = None) ->
         print(f"  [Extractor] Étape 4 — Batch {batch_num}/{total_batches} : {', '.join(batch)}")
         companies = extract_batch(sections, batch, freq, period_info)
         print(f"  [Extractor] Batch {batch_num} -> {len(companies)} société(s)")
+
+        print(f"  [Extractor] Étape 4bis — Extra (cours 100j + fondamentaux) batch {batch_num}/{total_batches}")
+        extras = extract_extra(sections, batch)
+        companies = _merge_extra(companies, extras)
+
         all_companies.extend(companies)
 
     print(f"  [Extractor] Total brut : {len(all_companies)} société(s).")
