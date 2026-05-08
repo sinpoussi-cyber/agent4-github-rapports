@@ -13,7 +13,15 @@
       "Bash(python -m py_compile generate_note_strategique.py)",
       "Bash(python -m py_compile generate_fiches_societes.py)",
       "Bash(python -c \"import extractor; print\\('OK — module chargé sans erreur'\\)\")",
-      "Bash(python -c \"from extractor import extract_all, clean_text, split_text_sections, build_ticker_context; print\\('Toutes les fonctions publiques importées OK'\\)\")"
+      "Bash(python -c \"from extractor import extract_all, clean_text, split_text_sections, build_ticker_context; print\\('Toutes les fonctions publiques importées OK'\\)\")",
+      "Bash(mkdir -p samples)",
+      "Bash(cp \"C:/Users/POUSSI/Downloads/Rapport_Ultimate_BRVM_20260507_2139.docx\" samples/)",
+      "Bash(python inspect_source.py)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(pip install *)",
+      "Bash(python *)",
+      "Bash(PYTHONIOENCODING=utf-8 python inspect_source.py)",
+      "Bash(PYTHONIOENCODING=utf-8 python *)"
     ]
   }
 }
