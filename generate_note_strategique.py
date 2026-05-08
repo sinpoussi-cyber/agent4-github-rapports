@@ -641,7 +641,7 @@ def _section_entete(doc, d, date_str: str):
 
 def _section_brvm_composite(doc, d):
     """Section 2 — Indice BRVM Composite sur 100 jours."""
-    _heading(doc, "ÉVOLUTION DE L'INDICE BRVM COMPOSITE (100 JOURS)")
+    _heading(doc, "ÉVOLUTION DE L'INDICE BRVM COMPOSITE (100 derniers jours)")
 
     # ── Données préalables
     idx = extract_brvm_index_data(d)
@@ -1203,7 +1203,7 @@ def _section_actualites(doc, d):
 
 def _section_alertes(doc, d):
     """Section 10 — Alertes stratégiques."""
-    _heading(doc, "ALERTES STRATÉGIQUES DU JOUR")
+    _heading(doc, "ALERTES DU JOUR")
 
     # ── Données préalables
     surachat = _sl(d, "rsi_surachat")
@@ -1348,7 +1348,7 @@ def _section_alertes(doc, d):
 # ── Classement 47 sociétés ────────────────────────────────────────────────────
 
 def _section_classement(doc, d):
-    _heading(doc, "CLASSEMENT 47 SOCIÉTÉS /100")
+    _heading(doc, "CLASSEMENT DES SOCIÉTÉS — SCORE COMPOSITE /100")
 
     classement = _sl(d, "classement_47")
     if not classement:
