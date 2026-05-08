@@ -17,7 +17,7 @@ _BATCH_SIZE = 3
 _MAX_RETRIES = 3
 
 # Seuils validation qualité
-_MAX_NULL_RATIO = 0.5
+_MAX_NULL_RATIO = 0.2   # 80% des champs essentiels doivent être présents
 _MIN_SCORE_RATIO = 0.3
 
 # Limites de taille par appel LLM
@@ -144,6 +144,13 @@ def split_text_sections(text: str) -> dict:
     if company_start is None:
         brvm_end      = max(1, n // 4)
         company_start = brvm_end
+
+    # Garantir une section globale d'au moins 50 lignes ou 3000 chars
+    _MIN_BRVM_LINES = 50
+    _MIN_BRVM_CHARS = 3_000
+    brvm_end = max(brvm_end or 0, min(_MIN_BRVM_LINES, n))
+    while brvm_end < n and len('\n'.join(lines[:brvm_end])) < _MIN_BRVM_CHARS:
+        brvm_end = min(brvm_end + 10, n)
 
     brvm_section    = '\n'.join(lines[:brvm_end]).strip()
     company_section = '\n'.join(
@@ -411,6 +418,8 @@ def extract_batch(sections: dict, tickers: list,
 # VALIDATION QUALITÉ
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# mm/boll/macd/rsi/stoch/var_1j exclus de la validation car souvent absents
+_ESSENTIAL_FIELDS = ("ticker", "nom", "secteur", "cours", "reco", "score")
 _CORE_FIELDS = ("ticker", "nom", "secteur", "cours", "var_1j", "reco", "score",
                 "mm", "boll", "macd", "rsi", "stoch")
 
@@ -420,17 +429,20 @@ def _log_extraction_stats(companies: list) -> dict:
     if not companies:
         return {"null_ratio": 1.0, "score_nonzero_ratio": 0.0}
 
-    total   = len(companies) * len(_CORE_FIELDS)
-    nulls   = sum(1 for c in companies for f in _CORE_FIELDS if c.get(f) is None)
-    nonzero = sum(
+    total_all = len(companies) * len(_CORE_FIELDS)
+    nulls_all = sum(1 for c in companies for f in _CORE_FIELDS if c.get(f) is None)
+    total_ess = len(companies) * len(_ESSENTIAL_FIELDS)
+    nulls_ess = sum(1 for c in companies for f in _ESSENTIAL_FIELDS if c.get(f) is None)
+    nonzero   = sum(
         1 for c in companies
         if c.get("score") is not None and float(c.get("score") or 0) > 0
     )
-    null_ratio  = nulls / total
+    null_ratio  = nulls_ess / total_ess
     score_ratio = nonzero / len(companies)
 
     print(f"  [Extractor/Stats] Sociétés     : {len(companies)}")
-    print(f"  [Extractor/Stats] Champs null  : {nulls}/{total} ({null_ratio*100:.1f}%)")
+    print(f"  [Extractor/Stats] Champs null (tous)       : {nulls_all}/{total_all} ({nulls_all/total_all*100:.1f}%)")
+    print(f"  [Extractor/Stats] Champs null (essentiels) : {nulls_ess}/{total_ess} ({null_ratio*100:.1f}%)")
     print(f"  [Extractor/Stats] Scores > 0   : {nonzero}/{len(companies)} ({score_ratio*100:.1f}%)")
     if companies:
         print(f"  [Extractor/Debug] 1ère société : "
