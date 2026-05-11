@@ -400,14 +400,47 @@ def _score_f(data) -> float:
 # ── Extraction texte source ───────────────────────────────────────────────────
 
 def _extract_text(doc_bytes: bytes) -> str:
+    """
+    Parcourt le body en ordre document pour préserver l'association paragraphes/tableaux.
+    Les cellules au format 'clé\\nvaleur' (comme dans les tableaux d'indicateurs
+    financiers du rapport source) sont aplaties en 'clé: valeur'.
+    """
     doc = Document(io.BytesIO(doc_bytes))
-    lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-    for table in doc.tables:
-        for row in table.rows:
-            cells = [c.text.strip() for c in row.cells if c.text.strip()]
-            if cells:
-                lines.append(" | ".join(cells))
-    return "\n".join(lines)
+    para_by_id = {id(p._element): p for p in doc.paragraphs}
+    table_by_id = {id(t._element): t for t in doc.tables}
+
+    parts = []
+    table_idx = 0
+    for child in doc.element.body.iterchildren():
+        if child.tag == qn('w:p'):
+            p = para_by_id.get(id(child))
+            if p is None:
+                continue
+            txt = p.text.strip()
+            if txt:
+                parts.append(txt)
+        elif child.tag == qn('w:tbl'):
+            t = table_by_id.get(id(child))
+            if t is None:
+                continue
+            table_idx += 1
+            kv_lines = []
+            for row in t.rows:
+                for cell in row.cells:
+                    raw = cell.text.strip()
+                    if not raw:
+                        continue
+                    if '\n' in raw:
+                        k, v = raw.split('\n', 1)
+                        k, v = k.strip(), v.strip()
+                        if v and v.lower() != 'none':
+                            kv_lines.append(f"  {k}: {v}")
+                    else:
+                        kv_lines.append(f"  {raw}")
+            if kv_lines:
+                parts.append(f"[Tableau {table_idx}]")
+                parts.extend(kv_lines)
+    return "\n".join(parts)
 
 
 # ── Contexte multi-documents ─────────────────────────────────────────────────

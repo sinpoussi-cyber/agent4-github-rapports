@@ -23,8 +23,9 @@ _MIN_SCORE_RATIO = 0.3
 # Limites de taille par appel LLM
 _MAX_CHARS_TICKERS   = 25_000
 _MAX_CHARS_BRVM_GLOB = 15_000
-_MAX_CHARS_BATCH     = 20_000
-_CHARS_PER_TICKER    =  4_000  # fenêtre extraite autour de chaque occurrence de ticker
+_MAX_CHARS_BATCH     = 35_000
+_CHARS_PER_TICKER    =  6_000  # fenêtre fallback (occurrences génériques)
+_SECTION_WINDOW      = 10_000  # fenêtre avant -> couvre la section dédiée
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -193,33 +194,61 @@ def split_text_sections(text: str) -> dict:
 
 def build_ticker_context(sections: dict, tickers: list) -> str:
     """
-    Pour chaque ticker, extrait une fenêtre de _CHARS_PER_TICKER chars autour
-    de ses occurrences dans le texte.
+    Pour chaque ticker, assemble un contexte ciblé en trois sources :
+    1. Ligne résumé du top dans brvm_global (prix, reco, confiance, risque)
+    2. Section dédiée à la société (en-tête numéroté "N. TICKER -") — fenêtre
+       _SECTION_WINDOW chars vers l'avant ; on prend le DERNIER match pour
+       éviter la table des matières.
+    3. Fallback : occurrences génériques avec fenêtre _CHARS_PER_TICKER.
 
-    Ordre de recherche : section "societes" -> texte complet (fallback).
     Retourne un texte ciblé < _MAX_CHARS_BATCH chars.
     """
-    societes_text = sections.get("societes") or ""
     full_text     = sections.get("full_clean", "")
+    brvm_text     = sections.get("brvm_global") or ""
+    societes_text = sections.get("societes") or ""
     contexts      = []
     half          = _CHARS_PER_TICKER // 2
 
     for ticker in tickers:
-        pat = re.compile(r'\b' + re.escape(ticker) + r'\b')
+        snippets = []
+        sources_used = []
 
-        source, label = societes_text, "sociétés"
-        matches = list(pat.finditer(source))
-        if not matches:
-            source, label = full_text, "complet"
-            matches = list(pat.finditer(source))
+        # 1. Ligne résumé top (Prix / ACHAT / VENTE / NEUTRE)
+        summary_pat = re.compile(
+            r'^[^\n]*\b' + re.escape(ticker) + r'\b[^\n]*'
+            r'(?:\d{2,}\s*FCFA|ACHAT|VENTE|NEUTRE)[^\n]*$',
+            re.MULTILINE | re.IGNORECASE,
+        )
+        m_sum = summary_pat.search(brvm_text or full_text)
+        if m_sum:
+            snippets.append(f"[Résumé top] {m_sum.group(0).strip()}")
+            sources_used.append("résumé")
 
-        if matches:
-            snippets = []
-            for m in matches[:2]:  # Au plus 2 occurrences par ticker
-                start = max(0, m.start() - half)
-                end   = min(len(source), m.end() + half)
-                snippets.append(source[start:end])
-            ctx = f"=== {ticker} (section {label}) ===\n" + "\n[...]\n".join(snippets)
+        # 2. Section dédiée — dernier match pour éviter la TOC
+        header_pat = re.compile(
+            r'(?:^|\n)\s*\d+\.\s+' + re.escape(ticker) + r'\s*[-—]',
+            re.MULTILINE,
+        )
+        header_matches = list(header_pat.finditer(full_text))
+        if header_matches:
+            start = header_matches[-1].start()
+            end   = min(len(full_text), start + _SECTION_WINDOW)
+            snippets.append(full_text[start:end])
+            sources_used.append("section")
+
+        # 3. Fallback générique si rien trouvé
+        if not snippets:
+            pat = re.compile(r'\b' + re.escape(ticker) + r'\b')
+            source = societes_text or full_text
+            for m in list(pat.finditer(source))[:2]:
+                a = max(0, m.start() - half)
+                b = min(len(source), m.end() + half)
+                snippets.append(source[a:b])
+            if snippets:
+                sources_used.append("fallback")
+
+        if snippets:
+            ctx = f"=== {ticker} ({', '.join(sources_used)}) ===\n" + "\n\n---\n\n".join(snippets)
         else:
             print(f"  [TickerCtx] '{ticker}' introuvable dans le texte")
             ctx = f"=== {ticker} : non trouvé dans le rapport ==="
