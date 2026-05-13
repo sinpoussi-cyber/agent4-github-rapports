@@ -266,7 +266,9 @@ def _build_price_chart_png(s: dict, width_in: float = 6.5, height_in: float = 2.
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
     plt.close(fig)
-    return buf.getvalue()
+    png_bytes = buf.getvalue()
+    print(f"  [Fiches/Chart] {s.get('ticker')} : PNG size {len(png_bytes)} bytes")
+    return png_bytes
 
 
 def _fund_val(s: dict, key: str) -> str:
@@ -574,19 +576,23 @@ def build_chart_comment(doc, s: dict):
     Couvre : tendance, volatilité, momentum, phase de marché.
     """
     # ── Graphique réel (PNG matplotlib) si données disponibles
-    png = None
+    png_bytes = None
     try:
-        png = _build_price_chart_png(s)
+        png_bytes = _build_price_chart_png(s)
     except Exception as exc:
         print(f"  [Fiches/Chart] {s.get('ticker')} : échec génération chart — {exc}")
 
-    if png:
+    if png_bytes and len(png_bytes) > 1000:
         p_img = doc.add_paragraph()
         p_img.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p_img.paragraph_format.space_before = Pt(6)
         p_img.paragraph_format.space_after = Pt(2)
-        p_img.add_run().add_picture(io.BytesIO(png), width=Cm(16))
+        img_stream = io.BytesIO(png_bytes)
+        img_stream.seek(0)
+        p_img.add_run().add_picture(img_stream, width=Cm(16))
     else:
+        if png_bytes is not None:
+            print(f"  [Fiches/Chart] {s.get('ticker')} : PNG trop petit ({len(png_bytes)} bytes) — ignoré")
         p_ph = doc.add_paragraph()
         p_ph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p_ph.paragraph_format.space_before = Pt(8)
