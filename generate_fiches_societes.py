@@ -1,6 +1,8 @@
 import io
 import math
+import os
 import random
+import tempfile
 from datetime import date
 
 import matplotlib
@@ -587,9 +589,16 @@ def build_chart_comment(doc, s: dict):
         p_img.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p_img.paragraph_format.space_before = Pt(6)
         p_img.paragraph_format.space_after = Pt(2)
-        img_stream = io.BytesIO(png_bytes)
-        img_stream.seek(0)
-        p_img.add_run().add_picture(img_stream, width=Cm(16))
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp.write(png_bytes)
+            tmp_path = tmp.name
+        try:
+            p_img.add_run().add_picture(tmp_path, width=Cm(16))
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     else:
         if png_bytes is not None:
             print(f"  [Fiches/Chart] {s.get('ticker')} : PNG trop petit ({len(png_bytes)} bytes) — ignoré")
