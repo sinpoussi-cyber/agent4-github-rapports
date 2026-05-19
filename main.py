@@ -284,13 +284,9 @@ def cmd_rapport(type_rapport):
                 fiches = generate_fiches([doc1_bytes], "JOUR", pi_jour)
                 log(f"[Pipeline] {len(fiches)} société(s) extraite(s) → {len(fiches)} fiche(s) générée(s).")
                 if fiches:
-                    fiches_filename = f"Fiches_Societes_{today_str}.docx"
-                    fiches_bytes = (
-                        fiches[0][1] if len(fiches) == 1
-                        else _merge_docx([fbytes for _, fbytes in fiches])
-                    )
-                    attachments.append({"filename": fiches_filename, "data": fiches_bytes})
-                    log(f"{len(fiches)} fiche(s) fusionnée(s) → {fiches_filename}")
+                    for fname, fbytes in fiches:
+                        attachments.append({"filename": fname, "data": fbytes})
+                    log(f"{len(fiches)} fiche(s) jointes individuellement (pas de fusion).")
                 else:
                     log("AVERTISSEMENT : aucune fiche générée.")
             except Exception as e:

@@ -381,6 +381,8 @@ _SOURCE_ANCHORS = {
     "portefeuilles":    "PORTEFEUILLES MODÈLES",
     "alertes":          "ALERTES DU JOUR",
     "toc_detail":       "TABLE DES MATIÈRES - ANALYSES DÉTAILLÉES",
+    "predictions":      "PRÉDICTIONS",
+    "analyse_financiere": "ANALYSE FINANCIÈRE",
 }
 
 
@@ -1494,6 +1496,249 @@ def _section_portefeuilles(doc, source_buckets, source_doc):
         _copy_source_table(doc, tbl_xml, header_bg=bg, header_fg="333333")
 
 
+# ── Section 10 — Prédictions IA (pages 39-41 source) ─────────────────────────
+
+_HORIZONS_IA = ("J+1", "J+3", "J+5", "J+10")
+
+
+def _section_predictions_ia(doc, source_doc, source_buckets):
+    """Section 10 — Synthèse récapitulative des prédictions IA (J+1 → J+10).
+
+    Construit un tableau synthétique par horizon (J+1, J+3, J+5, J+10) avec
+    tendance prévue, niveau cible et confiance, extraits du texte source.
+    Pas de copie intégrale — résumé intelligent des chiffres clés.
+    """
+    _heading(doc, "SYNTHÈSE RÉCAPITULATIVE DES PRÉDICTIONS IA (J+1 → J+10)")
+    blocks = source_buckets.get("predictions", [])
+    if not blocks:
+        _para(doc, "Section prédictions IA non identifiée dans le rapport source.")
+        return
+
+    # Intro — 1er paragraphe non-titre
+    intro = ""
+    for kind, el in blocks:
+        if kind == "p" and not _para_style(el).startswith("Heading"):
+            txt = _para_text(el).strip()
+            if txt:
+                intro = txt
+                break
+    if intro:
+        _para(doc, intro[:600] + ("…" if len(intro) > 600 else ""))
+
+    # Agrège tous les paragraphes pour le parsing par horizon
+    lines = []
+    for kind, el in blocks:
+        if kind == "p":
+            txt = _para_text(el).strip()
+            if txt:
+                lines.append(txt)
+
+    # Parse par horizon : tendance / niveau cible / confiance
+    rx_tendance  = re.compile(r"(haussi[èe]re?|baissi[èe]re?|neutre|stable|lat[ée]rale?)", re.IGNORECASE)
+    rx_niveau    = re.compile(r"(?:cible|niveau|objectif|target)[^\d\-+]*([\-+]?\d[\d\s.,]*)\s*(points?|pts|FCFA)?", re.IGNORECASE)
+    rx_confiance = re.compile(r"(?:confiance|fiabilit[ée]|probabilit[ée])[^\d]*?(\d{1,3})\s*%", re.IGNORECASE)
+
+    horizon_data = {}
+    for h in _HORIZONS_IA:
+        tendance, niveau, confiance = "—", "—", "—"
+        for ln in lines:
+            if h not in ln:
+                continue
+            if tendance == "—":
+                m = rx_tendance.search(ln)
+                if m:
+                    tendance = m.group(1).capitalize()
+            if niveau == "—":
+                m = rx_niveau.search(ln)
+                if m:
+                    niveau = m.group(1).strip() + (" " + m.group(2) if m.group(2) else "")
+            if confiance == "—":
+                m = rx_confiance.search(ln)
+                if m:
+                    confiance = f"{m.group(1)}%"
+        horizon_data[h] = (tendance, niveau, confiance)
+
+    # Tableau synthétique par horizon
+    _heading(doc, "Tableau de synthèse par horizon", 2)
+    tbl = doc.add_table(rows=1, cols=4)
+    tbl.style = "Table Grid"
+    _tbl_header(tbl, ["Horizon", "Tendance prévue", "Niveau cible", "Confiance"], "673AB7", "FFFFFF")
+    for h in _HORIZONS_IA:
+        tendance, niveau, confiance = horizon_data[h]
+        tr = tbl.add_row()
+        tr.cells[0].text = h
+        tr.cells[1].text = tendance
+        tr.cells[2].text = niveau
+        tr.cells[3].text = confiance
+        t_low = tendance.lower()
+        if "hauss" in t_low:
+            _cell_bg(tr.cells[1], "C6EFCE")
+        elif "baiss" in t_low:
+            _cell_bg(tr.cells[1], "FFC7CE")
+        elif tendance != "—":
+            _cell_bg(tr.cells[1], "FFEB9C")
+        for cell in tr.cells:
+            for p in cell.paragraphs:
+                for r in p.runs:
+                    r.font.size = Pt(9)
+    doc.add_paragraph()
+
+    # Si une table de prédictions existe dans le source, l'inclure (limitée)
+    tables = [el for kind, el in blocks if kind == "tbl"]
+    if tables:
+        _heading(doc, "Détails des prédictions par horizon (source)", 2)
+        _copy_source_table(doc, tables[0], header_bg="673AB7", header_fg="FFFFFF", max_rows=10)
+
+    # Recommandation finale synthétique
+    n_haut = sum(1 for h in _HORIZONS_IA if "hauss" in horizon_data[h][0].lower())
+    n_bas  = sum(1 for h in _HORIZONS_IA if "baiss" in horizon_data[h][0].lower())
+    if n_haut > n_bas:
+        reco = (
+            "Le modèle IA penche majoritairement vers une orientation haussière sur les "
+            "prochains horizons. Un repositionnement progressif vers les valeurs à score "
+            "composite élevé peut être envisagé, en privilégiant les titres bénéficiant "
+            "d'une confluence technique et fondamentale positive."
+        )
+    elif n_bas > n_haut:
+        reco = (
+            "Le modèle IA anticipe un environnement majoritairement baissier sur les "
+            "prochains horizons. La priorité doit être donnée à la préservation du capital, "
+            "au renforcement des positions défensives et à la constitution d'une réserve "
+            "de liquidités permettant d'agir aux points de retournement."
+        )
+    else:
+        reco = (
+            "Les prédictions IA présentent un équilibre entre hausse et baisse selon "
+            "l'horizon retenu. Une posture tactique flexible — combinant allocation neutre "
+            "et sélectivité accrue sur les meilleurs scores — est recommandée."
+        )
+    _para(doc, reco)
+
+
+# ── Section 11 — Analyse financière comparative par secteur (pages 42-66) ────
+
+def _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets):
+    """Section 11 — Analyse financière comparative par secteur.
+
+    Tableau comparatif par secteur avec ratios clés (PER, ROE, marge nette,
+    croissance CA). Top 3 sociétés par secteur avec ratios principaux.
+    Commentaire de synthèse 2-3 lignes par secteur. Pas de copie intégrale.
+    """
+    _heading(doc, "ANALYSE FINANCIÈRE COMPARATIVE PAR SECTEUR")
+    blocks = source_buckets.get("analyse_financiere", [])
+    if not blocks:
+        _para(doc, "Section analyse financière sectorielle non identifiée dans le rapport source.")
+        return
+
+    # Intro
+    intro = ""
+    for kind, el in blocks:
+        if kind == "p" and not _para_style(el).startswith("Heading"):
+            txt = _para_text(el).strip()
+            if txt:
+                intro = txt
+                break
+    if intro:
+        _para(doc, intro[:600] + ("…" if len(intro) > 600 else ""))
+
+    # Découpage par sous-secteur (Heading2/Heading3)
+    sector_groups = []  # [(name, [(kind, el), ...]), ...]
+    current_name = None
+    current_blocks = []
+    for kind, el in blocks:
+        if kind == "p":
+            st = _para_style(el)
+            txt = _para_text(el).strip()
+            if st in ("Heading2", "Heading3") and txt:
+                if current_name and current_blocks:
+                    sector_groups.append((current_name, current_blocks))
+                name = txt.split(":", 1)[-1].strip() if txt.lower().startswith("secteur") else txt
+                current_name = re.sub(r"^[^\w]+", "", name)  # strip emoji
+                current_blocks = []
+                continue
+        if current_name is not None:
+            current_blocks.append((kind, el))
+    if current_name and current_blocks:
+        sector_groups.append((current_name, current_blocks))
+
+    if not sector_groups:
+        _para(doc, "Aucune sous-section sectorielle détectée dans l'analyse financière source.")
+        return
+
+    # Extraction des ratios moyens depuis le texte d'un secteur
+    _ratio_patterns = {
+        "PER":           re.compile(r"PER[^a-zA-Z\d\-+]{0,4}([\-+]?\d+[.,]?\d*)", re.IGNORECASE),
+        "ROE":           re.compile(r"ROE[^a-zA-Z\d\-+]{0,4}([\-+]?\d+[.,]?\d*\s*%?)", re.IGNORECASE),
+        "Marge nette":   re.compile(r"marge\s+nette[^\d\-+]{0,8}([\-+]?\d+[.,]?\d*\s*%?)", re.IGNORECASE),
+        "Croissance CA": re.compile(r"croissance\s+(?:du\s+)?CA[^\d\-+]{0,8}([\-+]?\d+[.,]?\d*\s*%?)", re.IGNORECASE),
+    }
+
+    def _extract_ratios(group_blocks):
+        text_all = " ".join(_para_text(el) for kind, el in group_blocks if kind == "p")
+        return {lbl: (rx.search(text_all).group(1).strip() if rx.search(text_all) else "—")
+                for lbl, rx in _ratio_patterns.items()}
+
+    # Tableau comparatif par secteur
+    _heading(doc, "Tableau comparatif par secteur — Ratios financiers clés", 2)
+    tbl = doc.add_table(rows=1, cols=5)
+    tbl.style = "Table Grid"
+    _tbl_header(tbl, ["Secteur", "PER", "ROE", "Marge nette", "Croissance CA"], "1A73E8", "FFFFFF")
+    ratios_cache = {}
+    for name, group_blocks in sector_groups[:12]:
+        r = _extract_ratios(group_blocks)
+        ratios_cache[name] = r
+        tr = tbl.add_row()
+        tr.cells[0].text = name[:40]
+        tr.cells[1].text = r["PER"]
+        tr.cells[2].text = r["ROE"]
+        tr.cells[3].text = r["Marge nette"]
+        tr.cells[4].text = r["Croissance CA"]
+        for cell in tr.cells:
+            for p in cell.paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(8.5)
+    doc.add_paragraph()
+
+    # Top 3 sociétés par secteur + commentaire de synthèse
+    _heading(doc, "Top 3 sociétés par secteur", 2)
+    for name, group_blocks in sector_groups[:10]:
+        tables = [el for kind, el in group_blocks if kind == "tbl"]
+        if not tables:
+            continue
+        data = _read_source_tbl_data(tables[0])
+        if len(data) < 2:
+            continue
+        top3 = [data[0]] + data[1:4]
+        _heading(doc, name, 3)
+        n_cols = max(len(r) for r in top3)
+        tbl_s = doc.add_table(rows=1, cols=n_cols)
+        tbl_s.style = "Table Grid"
+        _tbl_header(tbl_s, (top3[0] + [""] * n_cols)[:n_cols], "283593", "FFFFFF")
+        for r in top3[1:]:
+            tr = tbl_s.add_row()
+            padded = (r + [""] * n_cols)[:n_cols]
+            for i, v in enumerate(padded):
+                tr.cells[i].text = (v or "")[:60]
+                for p in tr.cells[i].paragraphs:
+                    for run in p.runs:
+                        run.font.size = Pt(8.5)
+        # Commentaire de synthèse 2-3 lignes max
+        r = ratios_cache.get(name, {})
+        parts = [f"{k} {v}" for k, v in r.items() if v != "—"]
+        if parts:
+            _para(doc, "Synthèse — " + " · ".join(parts)
+                  + ". Sélection à privilégier sur la convergence ROE/marge/croissance.")
+        sp = doc.add_paragraph()
+        sp.paragraph_format.space_after = Pt(2)
+
+    # Conclusion synthétique globale
+    _para(doc,
+          f"{len(sector_groups)} secteurs analysés. La sélection des titres doit s'appuyer "
+          "sur la combinaison ROE élevé + marge nette positive + croissance du CA, "
+          "tout en restant attentif aux niveaux de valorisation (PER) qui conditionnent "
+          "le potentiel de réappréciation à moyen terme.")
+
+
 # ── Build complet ─────────────────────────────────────────────────────────────
 
 def _build_docx(data: dict, source_doc, source_buckets: dict, date_str: str) -> bytes:
@@ -1517,6 +1762,8 @@ def _build_docx(data: dict, source_doc, source_buckets: dict, date_str: str) -> 
     _section_classement(doc, source_buckets, source_doc)            # 7 — Classement /100
     _section_portefeuilles(doc, source_buckets, source_doc)         # 8 — 3 portefeuilles
     _section_alertes(doc, source_buckets, source_doc)               # 9 — Alertes du jour
+    _section_predictions_ia(doc, source_doc, source_buckets)        # 10 — Prédictions IA (J+1 → J+10)
+    _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets)  # 11 — Analyse financière sectorielle
 
     buf = io.BytesIO()
     doc.save(buf)

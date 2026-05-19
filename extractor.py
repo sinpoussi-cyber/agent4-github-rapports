@@ -236,7 +236,21 @@ def build_ticker_context(sections: dict, tickers: list) -> str:
             snippets.append(full_text[start:end])
             sources_used.append("section")
 
-        # 3. Fallback générique si rien trouvé
+        # 3. Section "Analyse financière" dédiée (pages 42-66 du rapport source)
+        fin_pat = re.compile(
+            r'\banalyse\s+financi[èe]re\b[^\n]{0,400}\b' + re.escape(ticker) + r'\b'
+            r'|'
+            r'\b' + re.escape(ticker) + r'\b[^\n]{0,400}\banalyse\s+financi[èe]re\b',
+            re.IGNORECASE,
+        )
+        fin_match = fin_pat.search(full_text)
+        if fin_match:
+            start = max(0, fin_match.start() - 500)
+            end   = min(len(full_text), fin_match.end() + 4500)
+            snippets.append(f"[Analyse financière] {full_text[start:end]}")
+            sources_used.append("financière")
+
+        # 4. Fallback générique si rien trouvé
         if not snippets:
             pat = re.compile(r'\b' + re.escape(ticker) + r'\b')
             source = societes_text or full_text
@@ -453,6 +467,17 @@ _EXTRA_FIELDS = (
     "ca", "ca_date", "resultat_net", "rn_date",
     "marge_nette", "mn_date", "roe", "roe_date",
     "roa", "roa_date", "dividende", "div_date",
+    # Ratios financiers supplémentaires (pages 42-66 du rapport source)
+    "per", "per_date",
+    "dette_cp", "dette_cp_date",
+    "croissance_ca", "croissance_ca_date",
+    # Évolution historique sur 2-3 ans
+    "ca_n_1", "ca_n_2",
+    "resultat_n_1", "resultat_n_2",
+    "roe_n_1", "roe_n_2",
+    # Synthèse financière qualitative
+    "forces_financieres", "faiblesses_financieres",
+    "synthese_financiere", "date_donnees_financieres",
 )
 
 
@@ -469,7 +494,8 @@ def extract_extra(sections: dict, tickers: list) -> list:
 
     prompt = (
         "Tu analyses un rapport boursier BRVM. "
-        f"Pour chaque société : {tickers_str}, extrais les données suivantes.\n\n"
+        f"Pour chaque société : {tickers_str}, extrais les données suivantes "
+        "(y compris la section 'Analyse financière' si présente).\n\n"
         "RÈGLES STRICTES :\n"
         "1. Réponds UNIQUEMENT en JSON valide, commençant par [ et terminant par ].\n"
         "2. null pour toute valeur absente — JAMAIS d'invention.\n"
@@ -478,7 +504,18 @@ def extract_extra(sections: dict, tickers: list) -> list:
         "5. Dates au format JJ/MM/AAAA ou AAAA-MM-JJ tel que dans le texte.\n"
         "6. CA, résultat_net, dividende : conserve la valeur ET l'unité du texte "
         "(ex: '42,45 milliards FCFA', '22,3 millions FCFA', '150 FCFA').\n"
-        "7. marge_nette / roe / roa : pourcentage avec %, ex: '6,9%', '1,46%'.\n\n"
+        "7. marge_nette / roe / roa / croissance_ca : pourcentage avec %, "
+        "ex: '6,9%', '1,46%', '+12,3%'.\n"
+        "8. per : ratio cours/bénéfice (nombre simple, ex: 8.5, 12.3).\n"
+        "9. dette_cp : ratio dette/capitaux propres en valeur ou pourcentage "
+        "(ex: '0.45', '45%', '1,2x').\n"
+        "10. ca_n_1 / resultat_n_1 / roe_n_1 = exercice précédent (N-1) ; "
+        "ca_n_2 / resultat_n_2 / roe_n_2 = exercice N-2 si disponible.\n"
+        "11. forces_financieres / faiblesses_financieres : tableau de 3 points "
+        "max chacun (chaînes courtes <120 chars).\n"
+        "12. synthese_financiere : 2-3 phrases résumant la santé financière.\n"
+        "13. date_donnees_financieres : date de référence des données financières "
+        "(ex: '31/12/2025', 'T3 2025').\n\n"
         "Schéma exact :\n"
         "[\n"
         '  {\n'
@@ -492,7 +529,17 @@ def extract_extra(sections: dict, tickers: list) -> list:
         '    "marge_nette": "0,05%", "mn_date": "31/12/2025",\n'
         '    "roe": null, "roe_date": null,\n'
         '    "roa": null, "roa_date": null,\n'
-        '    "dividende": "Aucun", "div_date": "31/12/2025"\n'
+        '    "dividende": "Aucun", "div_date": "31/12/2025",\n'
+        '    "per": 8.5, "per_date": "31/12/2025",\n'
+        '    "dette_cp": "0.45", "dette_cp_date": "31/12/2025",\n'
+        '    "croissance_ca": "+5.2%", "croissance_ca_date": "31/12/2025",\n'
+        '    "ca_n_1": "40,3 Mds FCFA", "ca_n_2": "38,1 Mds FCFA",\n'
+        '    "resultat_n_1": "20,1 M FCFA", "resultat_n_2": "18,5 M FCFA",\n'
+        '    "roe_n_1": "5,8%", "roe_n_2": "5,2%",\n'
+        '    "forces_financieres": ["Marge nette stable", "Faible endettement", "Croissance régulière du CA"],\n'
+        '    "faiblesses_financieres": ["ROE en baisse", "Dividende non distribué", "Liquidité limitée"],\n'
+        '    "synthese_financiere": "Société aux fondamentaux solides malgré une rentabilité en repli. La structure financière reste saine avec un endettement maîtrisé.",\n'
+        '    "date_donnees_financieres": "31/12/2025"\n'
         "  }\n"
         "]\n\n"
         f"TEXTE SOURCE :\n{ticker_context}"
@@ -501,7 +548,7 @@ def extract_extra(sections: dict, tickers: list) -> list:
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             msg = client.messages.create(
-                model=_MODEL, max_tokens=2048,
+                model=_MODEL, max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = msg.content[0].text.strip()

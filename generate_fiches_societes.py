@@ -826,6 +826,131 @@ def build_fundamental_analysis(doc, s: dict):
         _key_bloc(doc, "PERSPECTIVES :", persp, "E8F8F0", "155724")
 
 
+def build_financial_analysis(doc, s: dict):
+    """
+    Analyse financière détaillée (pages 42-66 du rapport source) :
+    - Tableau ratios : PER, ROE, ROA, marge nette, croissance CA, dette/CP
+    - Évolution sur 2-3 ans si disponible (CA, résultat net, ROE)
+    - Forces et faiblesses financières (3 points max chacun)
+    - Conclusion financière en 2-3 lignes
+    - Date des données toujours affichée
+    """
+    _section_heading(doc, "ANALYSE FINANCIÈRE DÉTAILLÉE")
+
+    date_donnees = _fund_val(s, "date_donnees_financieres")
+    _narrative(doc,
+               f"Données financières de référence — {date_donnees}.",
+               size=8, italic=True, color="666666")
+
+    # ── 1. Tableau ratios financiers (6 ratios + dates)
+    _sub_heading(doc, "1.  Ratios financiers clés")
+    ratios_rows = [
+        ("PER (Price/Earnings)",  _fund_val(s, "per"),           _fund_val(s, "per_date")),
+        ("ROE (Return on Equity)", _fund_val(s, "roe"),          _fund_val(s, "roe_date")),
+        ("ROA (Return on Assets)", _fund_val(s, "roa"),          _fund_val(s, "roa_date")),
+        ("Marge nette",            _fund_val(s, "marge_nette"),  _fund_val(s, "mn_date")),
+        ("Croissance CA",          _fund_val(s, "croissance_ca"), _fund_val(s, "croissance_ca_date")),
+        ("Dette / Capitaux propres", _fund_val(s, "dette_cp"),   _fund_val(s, "dette_cp_date")),
+    ]
+    tbl_r = doc.add_table(rows=1 + len(ratios_rows), cols=3)
+    tbl_r.style = "Table Grid"
+    for i, h in enumerate(["Ratio", "Valeur", "Date"]):
+        _cw(tbl_r.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
+    for i, (label, val, dt) in enumerate(ratios_rows, start=1):
+        bg_val = "F5F5F5" if val == "N/D" else "FFFFFF"
+        bg_dt  = "F5F5F5" if dt  == "N/D" else "FFFFFF"
+        _cw(tbl_r.rows[i].cells[0], label, bold=True, size=8, bg="EBF0FA")
+        _cw(tbl_r.rows[i].cells[1], val, size=8, bg=bg_val)
+        _cw(tbl_r.rows[i].cells[2], dt,  size=8, bg=bg_dt)
+    doc.add_paragraph()
+
+    # ── 2. Évolution historique sur 2-3 ans (CA / RN / ROE)
+    ca_n   = _fund_val(s, "ca")
+    ca_n_1 = _fund_val(s, "ca_n_1")
+    ca_n_2 = _fund_val(s, "ca_n_2")
+    rn_n   = _fund_val(s, "resultat_net")
+    rn_n_1 = _fund_val(s, "resultat_n_1")
+    rn_n_2 = _fund_val(s, "resultat_n_2")
+    roe_n   = _fund_val(s, "roe")
+    roe_n_1 = _fund_val(s, "roe_n_1")
+    roe_n_2 = _fund_val(s, "roe_n_2")
+
+    has_history = any(v != "N/D" for v in (ca_n_1, ca_n_2, rn_n_1, rn_n_2, roe_n_1, roe_n_2))
+    if has_history:
+        _sub_heading(doc, "2.  Évolution sur 2-3 ans")
+        tbl_h = doc.add_table(rows=4, cols=4)
+        tbl_h.style = "Table Grid"
+        for i, h in enumerate(["Indicateur", "N-2", "N-1", "N (réf)"]):
+            _cw(tbl_h.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
+        evo_rows = [
+            ("Chiffre d'affaires", ca_n_2, ca_n_1, ca_n),
+            ("Résultat net",       rn_n_2, rn_n_1, rn_n),
+            ("ROE",                roe_n_2, roe_n_1, roe_n),
+        ]
+        for i, (lbl, v2, v1, v0) in enumerate(evo_rows, start=1):
+            _cw(tbl_h.rows[i].cells[0], lbl, bold=True, size=8, bg="EBF0FA")
+            _cw(tbl_h.rows[i].cells[1], v2, size=8, bg="F5F5F5" if v2 == "N/D" else "FFFFFF")
+            _cw(tbl_h.rows[i].cells[2], v1, size=8, bg="F5F5F5" if v1 == "N/D" else "FFFFFF")
+            _cw(tbl_h.rows[i].cells[3], v0, size=8, bg="F5F5F5" if v0 == "N/D" else "FFFFFF")
+        doc.add_paragraph()
+    else:
+        _narrative(doc,
+                   "Historique sur 2-3 ans non disponible dans le rapport source.",
+                   size=8, italic=True, color="888888")
+
+    # ── 3. Forces / Faiblesses (3 max chacun)
+    forces = _sl(s, "forces_financieres")[:3]
+    faibles = _sl(s, "faiblesses_financieres")[:3]
+
+    _sub_heading(doc, "3.  Forces et faiblesses financières")
+    if forces or faibles:
+        tbl_ff = doc.add_table(rows=4, cols=2)
+        tbl_ff.style = "Table Grid"
+        _cw(tbl_ff.rows[0].cells[0], "✚  FORCES", bold=True, size=9, bg="0F9D58", color="FFFFFF")
+        _cw(tbl_ff.rows[0].cells[1], "−  FAIBLESSES", bold=True, size=9, bg="D93025", color="FFFFFF")
+        for i in range(3):
+            f_txt = forces[i] if i < len(forces) else "—"
+            w_txt = faibles[i] if i < len(faibles) else "—"
+            _cw(tbl_ff.rows[i + 1].cells[0], f"• {f_txt}", size=8, bg="EBF7EE" if f_txt != "—" else "F5F5F5")
+            _cw(tbl_ff.rows[i + 1].cells[1], f"• {w_txt}", size=8, bg="FDEEEE" if w_txt != "—" else "F5F5F5")
+        doc.add_paragraph()
+    else:
+        _narrative(doc,
+                   "Forces et faiblesses financières non identifiées dans le rapport source.",
+                   size=8, italic=True, color="888888")
+
+    # ── 4. Conclusion financière (2-3 lignes)
+    _sub_heading(doc, "4.  Conclusion financière")
+    synth = _s(s, "synthese_financiere")
+    if synth and synth not in ("", "—", "null", "None"):
+        _key_bloc(doc, "BILAN FINANCIER :", synth, "E8F0FB", "1558A7")
+    else:
+        # Fallback synthétique à partir des ratios disponibles
+        parts = []
+        if _fund_val(s, "per") != "N/D":
+            parts.append(f"PER {_fund_val(s, 'per')}")
+        if _fund_val(s, "roe") != "N/D":
+            parts.append(f"ROE {_fund_val(s, 'roe')}")
+        if _fund_val(s, "marge_nette") != "N/D":
+            parts.append(f"marge nette {_fund_val(s, 'marge_nette')}")
+        if _fund_val(s, "croissance_ca") != "N/D":
+            parts.append(f"croissance CA {_fund_val(s, 'croissance_ca')}")
+        if parts:
+            txt = (
+                "Profil financier synthétique — " + " · ".join(parts)
+                + f". Données arrêtées au {date_donnees}. "
+                "Une analyse complémentaire sera intégrée dès la disponibilité "
+                "de la synthèse qualitative du rapport source."
+            )
+        else:
+            txt = (
+                "Aucune synthèse financière n'a été extraite pour cette société dans "
+                f"le rapport de référence ({date_donnees}). "
+                "Les données seront enrichies lors de la prochaine publication."
+            )
+        _key_bloc(doc, "BILAN FINANCIER :", txt, "E8F0FB", "1558A7")
+
+
 def build_conclusion(doc, s: dict):
     """
     Conclusion d'investissement :
@@ -1006,6 +1131,8 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR", period_info: d
     build_technical_analysis(doc, s)         # Analyse technique (tableau + convergence)
     _add_separator(doc)
     build_fundamental_analysis(doc, s)       # Analyse fondamentale + risques + perspectives
+    _add_separator(doc)
+    build_financial_analysis(doc, s)         # Analyse financière détaillée (ratios, évolution, forces/faiblesses)
     _add_separator(doc)
     build_conclusion(doc, s)                 # Conclusion : matrice + divergences + action
     _pied(doc, date_str, freq, period_info)
