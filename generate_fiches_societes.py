@@ -285,23 +285,46 @@ def _fund_val(s: dict, key: str) -> str:
 
 def _build_fundamentals_table(doc, s: dict):
     """
-    Tableau Indicateur / Valeur / Date pour : CA, résultat net, marge nette,
-    ROE, ROA, dividende. 'N/D' quand la donnée est absente du rapport source.
+    Tableau enrichi des indicateurs fondamentaux. Inclut CA et résultat net
+    sur 3 exercices (N, N-1, N-2), ratios de rentabilité (marge, ROE, ROA, PER),
+    capitalisation et structure (dividende, rendement, dette nette / EBITDA),
+    et croissances (1 an / 3 ans). 'N/D' quand la donnée est absente du rapport.
     """
     _sub_heading(doc, "Indicateurs fondamentaux (extraits du rapport)")
 
+    per_actuel = _fund_val(s, "per")
+    per_secto = _fund_val(s, "per_sectoriel")
+    per_val = per_actuel if per_secto in ("N/D", "") else f"{per_actuel} (secteur : {per_secto})"
+
+    div_actuel = _fund_val(s, "dividende")
+    rend = _fund_val(s, "rendement_dividende")
+    div_val = div_actuel if rend in ("N/D", "") else f"{div_actuel} (rendement : {rend})"
+
+    dette_nette = _fund_val(s, "dette_nette")
+    dn_ebitda = _fund_val(s, "dette_nette_ebitda")
+    dette_val = dette_nette if dn_ebitda in ("N/D", "") else f"{dette_nette} | DN/EBITDA : {dn_ebitda}"
+
     rows = [
-        ("Chiffre d'affaires", _fund_val(s, "ca"),           _fund_val(s, "ca_date")),
-        ("Résultat net",       _fund_val(s, "resultat_net"), _fund_val(s, "rn_date")),
-        ("Marge nette",        _fund_val(s, "marge_nette"),  _fund_val(s, "mn_date")),
-        ("ROE",                _fund_val(s, "roe"),          _fund_val(s, "roe_date")),
-        ("ROA",                _fund_val(s, "roa"),          _fund_val(s, "roa_date")),
-        ("Dividende",          _fund_val(s, "dividende"),    _fund_val(s, "div_date")),
+        ("Chiffre d'affaires (N)",      _fund_val(s, "ca"),                       _fund_val(s, "ca_date")),
+        ("CA — exercice N-1",           _fund_val(s, "ca_n_1"),                   "N-1"),
+        ("CA — exercice N-2",           _fund_val(s, "ca_n_2"),                   "N-2"),
+        ("Résultat net (N)",            _fund_val(s, "resultat_net"),             _fund_val(s, "rn_date")),
+        ("Résultat net — N-1",          _fund_val(s, "resultat_n_1"),             "N-1"),
+        ("Résultat net — N-2",          _fund_val(s, "resultat_n_2"),             "N-2"),
+        ("Marge nette",                 _fund_val(s, "marge_nette"),              _fund_val(s, "mn_date")),
+        ("ROE",                         _fund_val(s, "roe"),                      _fund_val(s, "roe_date")),
+        ("ROA",                         _fund_val(s, "roa"),                      _fund_val(s, "roa_date")),
+        ("PER (actuel / sectoriel)",    per_val,                                  _fund_val(s, "per_date")),
+        ("Capitalisation boursière",    _fund_val(s, "capitalisation_boursiere"), _fund_val(s, "capi_date")),
+        ("Dividende & rendement",       div_val,                                  _fund_val(s, "div_date")),
+        ("Dette nette / EBITDA",        dette_val,                                _fund_val(s, "date_donnees_financieres")),
+        ("Croissance CA — 1 an",        _fund_val(s, "croissance_ca_1an"),        _fund_val(s, "croissance_ca_date")),
+        ("Croissance CA — 3 ans",       _fund_val(s, "croissance_ca_3ans"),       _fund_val(s, "croissance_ca_date")),
     ]
 
     tbl = doc.add_table(rows=1 + len(rows), cols=3)
     tbl.style = "Table Grid"
-    for i, h in enumerate(["Indicateur", "Valeur", "Date"]):
+    for i, h in enumerate(["Indicateur", "Valeur", "Date / période"]):
         _cw(tbl.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
 
     for i, (label, val, dt) in enumerate(rows, start=1):
@@ -312,6 +335,180 @@ def _build_fundamentals_table(doc, s: dict):
         _cw(tbl.rows[i].cells[2], dt,  size=8, bg=bg_dt)
 
     doc.add_paragraph()
+    _build_financial_commentary(doc, s)
+
+
+# ── Commentaire narratif d'analyse financière ────────────────────────────────
+
+def _pct_to_float(v):
+    """'+5,2%' → 5.2 ; '5,8%' → 5.8 ; None / non-numérique → None."""
+    if v is None:
+        return None
+    s = str(v).replace("%", "").replace(",", ".").replace("+", "").strip()
+    if not s or s.lower() in ("null", "none", "—", "n/d"):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _build_financial_commentary(doc, s: dict):
+    """
+    Paragraphe narratif (5-8 lignes) de synthèse financière. Combine :
+    - santé financière globale (rentabilité, marge, dette)
+    - comparaison sectorielle (PER vs PER sectoriel)
+    - points forts et risques identifiés
+    - conclusion sur l'attractivité financière
+    """
+    _sub_heading(doc, "Commentaire — Analyse financière")
+
+    ticker = _s(s, "ticker", "—")
+    nom = _s(s, "nom", ticker)
+    secteur = _s(s, "secteur", "—")
+
+    marge = _pct_to_float(s.get("marge_nette"))
+    roe = _pct_to_float(s.get("roe"))
+    roa = _pct_to_float(s.get("roa"))
+    croiss_1y = _pct_to_float(s.get("croissance_ca_1an")) or _pct_to_float(s.get("croissance_ca"))
+    croiss_3y = _pct_to_float(s.get("croissance_ca_3ans"))
+    rendement = _pct_to_float(s.get("rendement_dividende"))
+
+    per_f = _pct_to_float(s.get("per"))
+    per_sec_f = _pct_to_float(s.get("per_sectoriel"))
+
+    # 1) Santé financière globale
+    if roe is not None and marge is not None:
+        if roe >= 12 and marge >= 8:
+            sante = (
+                f"{nom} affiche une rentabilité solide (ROE de {roe:.1f}%, "
+                f"marge nette de {marge:.1f}%), signe d'une exploitation efficace "
+                "et d'un retour sur fonds propres conforme aux standards du secteur."
+            )
+        elif roe < 5 or marge < 2:
+            sante = (
+                f"La rentabilité de {nom} apparaît contrainte (ROE {roe:.1f}%, "
+                f"marge nette {marge:.1f}%), reflet de pressions sur les coûts ou "
+                "d'une structure de capital peu optimisée."
+            )
+        else:
+            sante = (
+                f"{nom} présente une rentabilité moyenne (ROE {roe:.1f}%, "
+                f"marge nette {marge:.1f}%), niveau qui laisse une marge de "
+                "progression sans signal d'alerte immédiat."
+            )
+    else:
+        sante = (
+            f"{nom}, cotée dans le secteur {secteur}, présente un profil financier "
+            "dont les ratios complets ne sont pas tous disponibles dans le rapport "
+            "source — l'appréciation s'appuie sur les éléments partiels recensés."
+        )
+
+    # 2) Croissance & dynamique commerciale
+    if croiss_3y is not None:
+        if croiss_3y >= 10:
+            croissance = (
+                f"La trajectoire commerciale est porteuse (croissance CA "
+                f"{croiss_3y:+.1f}% sur 3 ans), traduisant une dynamique "
+                "structurelle de parts de marché ou de pricing power."
+            )
+        elif croiss_3y <= 0:
+            croissance = (
+                f"Le chiffre d'affaires est en contraction sur la période "
+                f"({croiss_3y:+.1f}% sur 3 ans), signal d'une demande affaiblie ou "
+                "d'un repositionnement concurrentiel à surveiller."
+            )
+        else:
+            croissance = (
+                f"La croissance commerciale demeure modérée ({croiss_3y:+.1f}% "
+                "sur 3 ans), conforme à un secteur en phase de maturité."
+            )
+    elif croiss_1y is not None:
+        croissance = (
+            f"Sur le dernier exercice, le CA évolue de {croiss_1y:+.1f}% — "
+            "à confirmer sur un horizon pluriannuel."
+        )
+    else:
+        croissance = (
+            "La dynamique de croissance n'est pas chiffrée dans le rapport source, "
+            "ce qui limite la projection des flux futurs."
+        )
+
+    # 3) Comparaison sectorielle (PER)
+    if per_f is not None and per_sec_f is not None:
+        ecart = per_f - per_sec_f
+        if ecart <= -1.5:
+            comparaison = (
+                f"Sur le plan de la valorisation, le PER de {per_f:.1f} ressort "
+                f"en-dessous de la moyenne sectorielle ({per_sec_f:.1f}) — "
+                "configuration de décote relative qui peut intéresser les "
+                "investisseurs value, sous réserve d'un catalyseur de revalorisation."
+            )
+        elif ecart >= 1.5:
+            comparaison = (
+                f"La valorisation apparaît plus exigeante que la moyenne du secteur "
+                f"(PER {per_f:.1f} vs {per_sec_f:.1f}) — la prime ne se justifie "
+                "qu'en présence d'une croissance ou d'une rentabilité supérieures."
+            )
+        else:
+            comparaison = (
+                f"La valorisation est alignée sur le secteur (PER {per_f:.1f} vs "
+                f"{per_sec_f:.1f}), ce qui n'introduit ni décote ni prime."
+            )
+    elif per_f is not None:
+        comparaison = (
+            f"Le PER actuel ressort à {per_f:.1f} ; à défaut de référence sectorielle "
+            "explicite, la comparaison de valorisation reste indicative."
+        )
+    else:
+        comparaison = (
+            "La valorisation (PER) n'étant pas renseignée, la comparaison sectorielle "
+            "se fonde sur les ratios de rentabilité disponibles."
+        )
+
+    # 4) Forces & risques
+    forces = _sl(s, "forces_financieres")
+    faiblesses = _sl(s, "faiblesses_financieres")
+    forts_risques_parts = []
+    if forces:
+        forts_risques_parts.append("Points forts : " + " ; ".join(f.strip().rstrip(".") for f in forces[:3]) + ".")
+    if faiblesses:
+        forts_risques_parts.append("Risques : " + " ; ".join(f.strip().rstrip(".") for f in faiblesses[:3]) + ".")
+    if not forts_risques_parts:
+        if rendement is not None and rendement >= 4:
+            forts_risques_parts.append(
+                f"Point fort : rendement du dividende attractif ({rendement:.1f}%)."
+            )
+        if roa is not None and roa < 1:
+            forts_risques_parts.append(
+                f"Risque : ROA limité ({roa:.1f}%) signalant une efficience modeste des actifs."
+            )
+    forts_risques = " ".join(forts_risques_parts) if forts_risques_parts else (
+        "L'analyse qualitative ne fait pas ressortir de points forts ou risques majeurs "
+        "au-delà des ratios déjà commentés."
+    )
+
+    # 5) Conclusion sur l'attractivité financière
+    score = _score_f(s)
+    reco = _s(s, "reco", "").upper()
+    if score >= 70 or "ACHAT" in reco:
+        conclusion = (
+            "Au global, l'attractivité financière est jugée favorable : la combinaison "
+            "des fondamentaux soutient une position constructive sur le titre."
+        )
+    elif score <= 39 or "VENTE" in reco:
+        conclusion = (
+            "L'attractivité financière reste fragilisée : les ratios actuels ne "
+            "soutiennent pas un repositionnement offensif sans amélioration tangible."
+        )
+    else:
+        conclusion = (
+            "L'attractivité financière est intermédiaire : un positionnement sélectif "
+            "à proportion mesurée est cohérent avec le profil fondamental observé."
+        )
+
+    full = " ".join([sante, croissance, comparaison, forts_risques, conclusion])
+    _narrative(doc, full)
 
 
 # ── Helpers métier ────────────────────────────────────────────────────────────
@@ -527,10 +724,24 @@ def build_header(doc, s: dict, date_str: str):
     _cw(r2.cells[3], f"Résumé : {resume}", size=8, bg="F5F5F5")
 
 
+def _fmt_int(v) -> str:
+    """Format un nombre en milliers séparés par espace ; renvoie '—' si None."""
+    if v is None:
+        return "—"
+    try:
+        f = float(v)
+        if f != f:  # NaN
+            return "—"
+        return f"{f:,.0f}".replace(",", " ")
+    except (ValueError, TypeError):
+        return str(v).strip() or "—"
+
+
 def build_market_table(doc, s: dict):
     """
-    Tableau des métriques de marché en 4×2 (8 indicateurs).
-    Code couleur sur variation, risque et stabilité.
+    Tableau des métriques de marché en 6×2 (12 indicateurs).
+    Inclut capitalisation, volume moyen 30j, nombre d'actions et PER
+    en plus des métriques de risque/stabilité.
     """
     _section_heading(doc, "MÉTRIQUES DE MARCHÉ")
 
@@ -542,6 +753,10 @@ def build_market_table(doc, s: dict):
     risque = _s(s, "risque") or "—"
     divergence = _s(s, "divergence") or "aucune"
     stabilite = _s(s, "stabilite") or "—"
+    capi = _s(s, "capitalisation_boursiere") or "—"
+    vol_30j = _fmt_int(s.get("volume_moyen_30j"))
+    nb_act = _fmt_int(s.get("nb_actions"))
+    per = _s(s, "per") or "—"
 
     risque_bg = _risque_bg(risque)
     var_bg = _var_color(var_1j)
@@ -551,21 +766,25 @@ def build_market_table(doc, s: dict):
     div_bg = "FFEB9C" if divergence.lower() not in ("aucune", "—", "") else "FFFFFF"
 
     pairs = [
-        ("Cours actuel (FCFA)",   cours,      "F0F4FF"),
-        ("Variation 1 journée",   var_1j,     var_bg),
-        ("Volatilité",            volatilite, "FFFFFF"),
-        ("Bêta",                  beta,       "FFFFFF"),
-        ("Liquidité",             liquidite,  "FFFFFF"),
-        ("Niveau de risque",      risque,     risque_bg),
-        ("Divergence tech/fond",  divergence, div_bg),
-        ("Stabilité",             stabilite,  stab_bg),
+        ("Cours actuel (FCFA)",       cours,      "F0F4FF"),
+        ("Variation 1 journée",       var_1j,     var_bg),
+        ("Capitalisation boursière",  capi,       "FFFFFF"),
+        ("PER (Cours / BPA)",         per,        "FFFFFF"),
+        ("Volume moyen 30j",          vol_30j,    "FFFFFF"),
+        ("Nb actions en circulation", nb_act,     "FFFFFF"),
+        ("Volatilité",                volatilite, "FFFFFF"),
+        ("Bêta",                      beta,       "FFFFFF"),
+        ("Liquidité",                 liquidite,  "FFFFFF"),
+        ("Niveau de risque",          risque,     risque_bg),
+        ("Divergence tech/fond",      divergence, div_bg),
+        ("Stabilité",                 stabilite,  stab_bg),
     ]
 
-    tbl = doc.add_table(rows=4, cols=4)
+    tbl = doc.add_table(rows=6, cols=4)
     tbl.style = "Table Grid"
-    for i in range(4):
+    for i in range(6):
         ll, lv, lbg = pairs[i]
-        rl, rv, rbg = pairs[i + 4]
+        rl, rv, rbg = pairs[i + 6]
         _cw(tbl.rows[i].cells[0], ll, bold=True, size=8, bg="EBF0FA")
         _cw(tbl.rows[i].cells[1], lv, size=8, bg=lbg)
         _cw(tbl.rows[i].cells[2], rl, bold=True, size=8, bg="EBF0FA")
@@ -661,16 +880,63 @@ def build_chart_comment(doc, s: dict):
     _narrative(doc, implication)
 
 
+def _fmt_num(v, decimals: int = 1) -> str:
+    """Format un nombre avec N décimales, espaces de milliers. '—' si vide/None."""
+    if v is None:
+        return "—"
+    try:
+        f = float(v)
+        if f != f:
+            return "—"
+        s = f",.{decimals}f"
+        return format(f, s).replace(",", " ")
+    except (ValueError, TypeError):
+        return str(v).strip() or "—"
+
+
+def _tech_values_str(s: dict, sig_key: str) -> str:
+    """Construit la chaîne 'MM20: 2850 | MM50: 2920 | Signal: BAISSIER' pour
+    chaque indicateur, en injectant les valeurs numériques extraites."""
+    signal = _s(s, sig_key) or "—"
+    sig_upper = signal.upper() if signal != "—" else "—"
+    if sig_key == "mm":
+        return (
+            f"MM20 : {_fmt_num(s.get('mm20_valeur'), 0)} | "
+            f"MM50 : {_fmt_num(s.get('mm50_valeur'), 0)} | "
+            f"Signal : {sig_upper}"
+        )
+    if sig_key == "boll":
+        return (
+            f"Bande basse : {_fmt_num(s.get('boll_inf'), 0)} | "
+            f"Bande haute : {_fmt_num(s.get('boll_sup'), 0)} | "
+            f"Signal : {sig_upper}"
+        )
+    if sig_key == "macd":
+        return (
+            f"MACD : {_fmt_num(s.get('macd_valeur'), 2)} | "
+            f"Signal line : {_fmt_num(s.get('macd_signal_line'), 2)} | "
+            f"Signal : {sig_upper}"
+        )
+    if sig_key == "rsi":
+        return f"RSI : {_fmt_num(s.get('rsi_valeur'), 1)} | Signal : {sig_upper}"
+    if sig_key == "stoch":
+        return (
+            f"%K : {_fmt_num(s.get('stoch_k'), 1)} | "
+            f"%D : {_fmt_num(s.get('stoch_d'), 1)} | "
+            f"Signal : {sig_upper}"
+        )
+    return f"Signal : {sig_upper}"
+
+
 def build_technical_analysis(doc, s: dict):
     """
     Analyse technique structurée :
-    - Tableau des 5 indicateurs (signal + appréciation + détail)
+    - Tableau des 5 indicateurs (signal + appréciation + valeurs numériques + détail)
     - Synthèse globale
     - Évaluation convergence / divergence des signaux
     """
     _section_heading(doc, "ANALYSE TECHNIQUE")
 
-    # ── Tableau des indicateurs
     indicateurs = [
         ("Moyennes Mobiles (MM)", "mm",   "mm_signal",   "mm_detail"),
         ("Bandes de Bollinger",   "boll", "boll_signal", "boll_detail"),
@@ -681,7 +947,7 @@ def build_technical_analysis(doc, s: dict):
 
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = "Table Grid"
-    for i, h in enumerate(["Indicateur", "Appréciation", "Signal", "Analyse détaillée"]):
+    for i, h in enumerate(["Indicateur", "Appréciation", "Valeurs & Signal", "Analyse détaillée"]):
         _cw(tbl.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
 
     for label, sig_key, sig_label_key, detail_key in indicateurs:
@@ -689,11 +955,12 @@ def build_technical_analysis(doc, s: dict):
         sig_label = _s(s, sig_label_key) or (signal.capitalize() if signal else "—")
         detail = _s(s, detail_key) or "—"
         emoji = _signal_emoji(signal)
+        values_str = _tech_values_str(s, sig_key)
 
         row = tbl.add_row()
         _cw(row.cells[0], f"{emoji}  {label}", bold=True, size=8, bg="EBF0FA")
         _cw(row.cells[1], sig_label, size=8, bg=_signal_bg(signal))
-        _cw(row.cells[2], str(signal).upper() if signal else "—", size=8)
+        _cw(row.cells[2], values_str, size=7, bg=_signal_bg(signal))
         _cw(row.cells[3], detail[:120] if detail != "—" else "—", size=8)
 
     doc.add_paragraph()

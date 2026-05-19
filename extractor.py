@@ -467,10 +467,23 @@ _EXTRA_FIELDS = (
     "ca", "ca_date", "resultat_net", "rn_date",
     "marge_nette", "mn_date", "roe", "roe_date",
     "roa", "roa_date", "dividende", "div_date",
+    # Métriques de marché (à afficher dans MÉTRIQUES DE MARCHÉ)
+    "capitalisation_boursiere", "capi_date",
+    "volume_moyen_30j", "volume_30j_date",
+    "nb_actions", "nb_actions_date",
+    "rendement_dividende",
     # Ratios financiers supplémentaires (pages 42-66 du rapport source)
-    "per", "per_date",
+    "per", "per_date", "per_sectoriel",
     "dette_cp", "dette_cp_date",
+    "dette_nette", "ebitda", "dette_nette_ebitda",
     "croissance_ca", "croissance_ca_date",
+    "croissance_ca_1an", "croissance_ca_3ans",
+    # Indicateurs techniques : valeurs numériques (en plus du signal)
+    "mm20_valeur", "mm50_valeur",
+    "boll_inf", "boll_sup",
+    "macd_valeur", "macd_signal_line",
+    "rsi_valeur",
+    "stoch_k", "stoch_d",
     # Évolution historique sur 2-3 ans
     "ca_n_1", "ca_n_2",
     "resultat_n_1", "resultat_n_2",
@@ -495,26 +508,38 @@ def extract_extra(sections: dict, tickers: list) -> list:
     prompt = (
         "Tu analyses un rapport boursier BRVM. "
         f"Pour chaque société : {tickers_str}, extrais les données suivantes "
-        "(y compris la section 'Analyse financière' si présente).\n\n"
+        "(y compris les sections 'Analyse technique', 'Analyse financière', "
+        "'Résultats financiers', 'Métriques de marché' si présentes).\n\n"
         "RÈGLES STRICTES :\n"
         "1. Réponds UNIQUEMENT en JSON valide, commençant par [ et terminant par ].\n"
         "2. null pour toute valeur absente — JAMAIS d'invention.\n"
         "3. Cours : nombres en FCFA sans unité ni séparateur (ex: 1440, 14500).\n"
         "4. perf_100j : variation signée avec %, ex: '-7.29%', '+26.95%'.\n"
         "5. Dates au format JJ/MM/AAAA ou AAAA-MM-JJ tel que dans le texte.\n"
-        "6. CA, résultat_net, dividende : conserve la valeur ET l'unité du texte "
+        "6. CA, résultat_net, dividende, capitalisation_boursiere, dette_nette, "
+        "ebitda : conserve la valeur ET l'unité du texte "
         "(ex: '42,45 milliards FCFA', '22,3 millions FCFA', '150 FCFA').\n"
-        "7. marge_nette / roe / roa / croissance_ca : pourcentage avec %, "
+        "7. marge_nette / roe / roa / croissance_ca / croissance_ca_1an / "
+        "croissance_ca_3ans / rendement_dividende : pourcentage avec %, "
         "ex: '6,9%', '1,46%', '+12,3%'.\n"
-        "8. per : ratio cours/bénéfice (nombre simple, ex: 8.5, 12.3).\n"
-        "9. dette_cp : ratio dette/capitaux propres en valeur ou pourcentage "
-        "(ex: '0.45', '45%', '1,2x').\n"
-        "10. ca_n_1 / resultat_n_1 / roe_n_1 = exercice précédent (N-1) ; "
+        "8. per / per_sectoriel : ratio cours/bénéfice (nombre simple, ex: 8.5).\n"
+        "9. dette_cp / dette_nette_ebitda : ratio dette/capitaux propres ou "
+        "dette nette / EBITDA en valeur ou multiple (ex: '0.45', '1,2x', '2.3x').\n"
+        "10. volume_moyen_30j : nombre d'actions échangées en moyenne sur 30 jours "
+        "(nombre simple sans unité, ex: 12450).\n"
+        "11. nb_actions : nombre total d'actions en circulation (nombre simple, ex: 4500000).\n"
+        "12. ca_n_1 / resultat_n_1 / roe_n_1 = exercice précédent (N-1) ; "
         "ca_n_2 / resultat_n_2 / roe_n_2 = exercice N-2 si disponible.\n"
-        "11. forces_financieres / faiblesses_financieres : tableau de 3 points "
+        "13. Indicateurs techniques NUMÉRIQUES :\n"
+        "    - mm20_valeur / mm50_valeur : valeurs des moyennes mobiles 20j et 50j en FCFA.\n"
+        "    - boll_inf / boll_sup : bornes inférieure et supérieure des bandes de Bollinger.\n"
+        "    - macd_valeur / macd_signal_line : valeur du MACD et de sa ligne de signal.\n"
+        "    - rsi_valeur : valeur du RSI (nombre entre 0 et 100).\n"
+        "    - stoch_k / stoch_d : valeurs %K et %D du stochastique.\n"
+        "14. forces_financieres / faiblesses_financieres : tableau de 3 points "
         "max chacun (chaînes courtes <120 chars).\n"
-        "12. synthese_financiere : 2-3 phrases résumant la santé financière.\n"
-        "13. date_donnees_financieres : date de référence des données financières "
+        "15. synthese_financiere : 2-3 phrases résumant la santé financière.\n"
+        "16. date_donnees_financieres : date de référence des données financières "
         "(ex: '31/12/2025', 'T3 2025').\n\n"
         "Schéma exact :\n"
         "[\n"
@@ -527,12 +552,23 @@ def extract_extra(sections: dict, tickers: list) -> list:
         '    "ca": "42,45 Mds FCFA", "ca_date": "31/12/2025",\n'
         '    "resultat_net": "22,3 M FCFA", "rn_date": "31/12/2025",\n'
         '    "marge_nette": "0,05%", "mn_date": "31/12/2025",\n'
-        '    "roe": null, "roe_date": null,\n'
-        '    "roa": null, "roa_date": null,\n'
-        '    "dividende": "Aucun", "div_date": "31/12/2025",\n'
-        '    "per": 8.5, "per_date": "31/12/2025",\n'
+        '    "roe": "5,8%", "roe_date": "31/12/2025",\n'
+        '    "roa": "1,2%", "roa_date": "31/12/2025",\n'
+        '    "dividende": "150 FCFA", "div_date": "31/12/2025",\n'
+        '    "capitalisation_boursiere": "32,1 Mds FCFA", "capi_date": "07/05/2026",\n'
+        '    "volume_moyen_30j": 12450, "volume_30j_date": "07/05/2026",\n'
+        '    "nb_actions": 24000000, "nb_actions_date": "31/12/2025",\n'
+        '    "rendement_dividende": "3,5%",\n'
+        '    "per": 8.5, "per_date": "31/12/2025", "per_sectoriel": 11.2,\n'
         '    "dette_cp": "0.45", "dette_cp_date": "31/12/2025",\n'
+        '    "dette_nette": "5,2 Mds FCFA", "ebitda": "8,1 Mds FCFA", "dette_nette_ebitda": "0.64x",\n'
         '    "croissance_ca": "+5.2%", "croissance_ca_date": "31/12/2025",\n'
+        '    "croissance_ca_1an": "+5,2%", "croissance_ca_3ans": "+14,8%",\n'
+        '    "mm20_valeur": 1378, "mm50_valeur": 1412,\n'
+        '    "boll_inf": 1305, "boll_sup": 1455,\n'
+        '    "macd_valeur": -8.4, "macd_signal_line": -5.1,\n'
+        '    "rsi_valeur": 42.5,\n'
+        '    "stoch_k": 28.3, "stoch_d": 31.7,\n'
         '    "ca_n_1": "40,3 Mds FCFA", "ca_n_2": "38,1 Mds FCFA",\n'
         '    "resultat_n_1": "20,1 M FCFA", "resultat_n_2": "18,5 M FCFA",\n'
         '    "roe_n_1": "5,8%", "roe_n_2": "5,2%",\n'
@@ -548,7 +584,7 @@ def extract_extra(sections: dict, tickers: list) -> list:
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             msg = client.messages.create(
-                model=_MODEL, max_tokens=4096,
+                model=_MODEL, max_tokens=6144,
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = msg.content[0].text.strip()
