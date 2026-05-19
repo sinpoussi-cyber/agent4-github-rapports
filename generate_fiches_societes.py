@@ -737,6 +737,50 @@ def _fmt_int(v) -> str:
         return str(v).strip() or "—"
 
 
+def _validate_var_1j(val):
+    """Filtre les variations journalières aberrantes (>±10%, signe de
+    confusion avec une perf multi-jours type perf_100j)."""
+    if val is None:
+        return "—"
+    try:
+        pct = float(
+            str(val).replace("%", "").replace("+", "").replace(",", ".").strip()
+        )
+        if abs(pct) > 10:
+            return "—"
+        return val
+    except (ValueError, TypeError):
+        return "—"
+
+
+def _fmt_amount(val):
+    """Formate un montant avec séparateur de milliers (espace).
+    Si val est déjà une string portant une unité (Mds, M, FCFA, %), la
+    conserve telle quelle ; si val est un nombre brut ou une chaîne purement
+    numérique, formate avec espaces comme séparateur de milliers."""
+    if val is None or val == "N/D" or val == "—":
+        return "—"
+    if isinstance(val, (int, float)):
+        try:
+            f = float(val)
+            if f != f:
+                return "—"
+            return f"{f:,.0f}".replace(",", " ")
+        except (ValueError, TypeError):
+            return str(val)
+    s = str(val).strip()
+    if not s or s.lower() in ("null", "none"):
+        return "—"
+    if any(u in s for u in ("Md", "milliard", "Milliard", "million", "Million",
+                            "FCFA", "%", " M ", " M.")):
+        return s
+    try:
+        f = float(s.replace(" ", "").replace(",", "."))
+        return f"{f:,.0f}".replace(",", " ")
+    except ValueError:
+        return s
+
+
 def build_market_table(doc, s: dict):
     """
     Tableau des métriques de marché en 6×2 (12 indicateurs).
@@ -745,15 +789,15 @@ def build_market_table(doc, s: dict):
     """
     _section_heading(doc, "MÉTRIQUES DE MARCHÉ")
 
-    cours = _s(s, "cours") or "—"
-    var_1j = _s(s, "var_1j") or "—"
+    cours = _fmt_amount(s.get("cours"))
+    var_1j = _validate_var_1j(s.get("var_1j"))
     volatilite = _s(s, "volatilite") or "—"
     beta = _s(s, "beta") or "—"
     liquidite = _s(s, "liquidite") or "—"
     risque = _s(s, "risque") or "—"
     divergence = _s(s, "divergence") or "aucune"
     stabilite = _s(s, "stabilite") or "—"
-    capi = _s(s, "capitalisation_boursiere") or "—"
+    capi = _fmt_amount(s.get("capitalisation_boursiere"))
     vol_30j = _fmt_int(s.get("volume_moyen_30j"))
     nb_act = _fmt_int(s.get("nb_actions"))
     per = _s(s, "per") or "—"
@@ -836,8 +880,8 @@ def build_chart_comment(doc, s: dict):
     _section_heading(doc, "COMMENTAIRE DE LA COURBE — ÉVOLUTION 100 JOURS")
 
     ticker = _s(s, "ticker", "ce titre")
-    cours = _s(s, "cours") or "—"
-    var_1j = _s(s, "var_1j") or "—"
+    cours = _fmt_amount(s.get("cours"))
+    var_1j = _validate_var_1j(s.get("var_1j"))
     tendance = _s(s, "tendance_100j", "neutre")
     volatilite = _s(s, "volatilite", "modérée")
 
