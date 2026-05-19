@@ -1266,6 +1266,131 @@ def _section_macro(doc, source_buckets, source_doc):
 
 # ── Section 6 — Actualités du marché BRVM ────────────────────────────────────
 
+# Tickers BRVM par secteur — utilisés pour identifier les sociétés touchées
+# par chaque actualité présentée dans la note.
+_BRVM_SECTOR_TICKERS = {
+    "bancaire": ("Banque", [
+        ("BOAB", "BOA Burkina"), ("BOAC", "BOA Côte d'Ivoire"),
+        ("BOAM", "BOA Mali"), ("BOAN", "BOA Niger"), ("BOAS", "BOA Sénégal"),
+        ("SGBC", "SGBCI"), ("BICB", "BICI Bénin"), ("BICC", "BICI CI"),
+        ("NSBC", "NSIA Banque CI"), ("SIBC", "SIB"), ("CBIBF", "Coris Bank Burkina"),
+    ]),
+    "agricole": ("Agroalimentaire", [
+        ("SOGC", "SOGB"), ("SPHC", "SAPH"), ("PALC", "PALMCI"),
+        ("SCRC", "SUCRIVOIRE"), ("STBC", "SITAB"), ("SLBC", "SOLIBRA"),
+    ]),
+    "énergie": ("Énergie & Distribution", [
+        ("SHEC", "Vivo Energy CI"), ("SMBC", "SMB"), ("TTLC", "Total CI"),
+        ("TTLS", "Total Sénégal"), ("SIVC", "SIVOA"),
+    ]),
+    "télécoms": ("Télécoms", [
+        ("SNTS", "Sonatel"), ("ORAC", "Orange CI"), ("ONTBF", "Onatel BF"),
+    ]),
+    "industrie": ("Industrie", [
+        ("CABC", "CABC"), ("FTSC", "Filtisac"), ("SDSC", "SODE CI"),
+        ("SEMC", "SEMC"), ("STAC", "STA CI"),
+    ]),
+}
+
+_SECTOR_KEYWORDS = {
+    "bancaire": (
+        "banque", "bancaire", "crédit", "bceao", "monétaire", "taux directeur",
+        "refinancement", "liquidité bancaire", "boa ", "sgbci", "bici", "nsia",
+        "coris", "ecobank", "sib ",
+    ),
+    "agricole": (
+        "agricole", "agriculture", "cacao", "café", "coton", "hévéa", "caoutchouc",
+        "palmier", "huile de palme", "sucre", "récolte", "campagne",
+        "sogb", "saph", "palmci", "sucrivoire", "sitab", "solibra",
+    ),
+    "énergie": (
+        "pétrole", "essence", "carburant", "hydrocarbure", "gaz", "raffinerie",
+        "électricité", "énergie", "kwh", "barils", "brent", "shell", "total",
+        "vivo energy",
+    ),
+    "télécoms": (
+        "télécom", "telecom", "mobile money", "internet", "artci", "artp",
+        "fibre", "5g", "4g", "sonatel", "orange ", "onatel", "moov",
+    ),
+    "industrie": (
+        "industrie", "ciment", "usine", "production industrielle", "manufacture",
+        "cimenterie", "filtisac", "sode", "fabrication",
+    ),
+}
+
+_IMPACT_POS_KW = (
+    "hausse", "croissance", "record", "succès", "bénéfice", "dividende",
+    "investissement", "expansion", "augmentation", "amélioration", "positif",
+    "accord", "signature", "rebond", "performance", "progression", "gain",
+    "renforcement", "levée de fonds", "obligataire réussi", "souscription",
+)
+_IMPACT_NEG_KW = (
+    "baisse", "perte", "déficit", "crise", "chute", "recul", "défaut",
+    "sanction", "fermeture", "grève", "négatif", "alerte", "risque",
+    "dégradation", "contraction", "ralentissement", "tension", "litige",
+    "suspension", "report",
+)
+
+
+def _detect_brvm_sector(text: str):
+    t = (text or "").lower()
+    for key, keywords in _SECTOR_KEYWORDS.items():
+        if any(kw in t for kw in keywords):
+            return key
+    return None
+
+
+def _assess_brvm_impact(text: str) -> str:
+    t = (text or "").lower()
+    pos = sum(1 for k in _IMPACT_POS_KW if k in t)
+    neg = sum(1 for k in _IMPACT_NEG_KW if k in t)
+    if pos > neg:
+        return "Positif"
+    if neg > pos:
+        return "Négatif"
+    return "Neutre"
+
+
+def _brvm_impact_explanation(sector_key, impact: str) -> str:
+    sense = {
+        "Positif": "favoriser",
+        "Négatif": "peser sur",
+        "Neutre": "influencer",
+    }.get(impact, "influencer")
+    sector_phrases = {
+        "bancaire": (
+            f"Une évolution du contexte bancaire et monétaire est susceptible de "
+            f"{sense} les revenus d'intérêts, le coût du risque et la valorisation "
+            f"des banques cotées à la BRVM."
+        ),
+        "agricole": (
+            f"Les conditions de marché des matières premières agricoles peuvent "
+            f"{sense} les revenus des producteurs cotés (cacao, hévéa, palmier, "
+            f"sucre) et leur capacité à distribuer un dividende."
+        ),
+        "énergie": (
+            f"L'évolution des prix de l'énergie et des hydrocarbures tend à "
+            f"{sense} les marges des distributeurs et la consommation des ménages."
+        ),
+        "télécoms": (
+            f"Les décisions réglementaires ou commerciales du secteur télécoms "
+            f"peuvent {sense} l'ARPU, les investissements réseau et la rentabilité "
+            f"des opérateurs cotés."
+        ),
+        "industrie": (
+            f"Les dynamiques de production industrielle peuvent {sense} les "
+            f"volumes, les marges et les carnets de commandes des industriels cotés."
+        ),
+    }
+    if sector_key in sector_phrases:
+        return sector_phrases[sector_key]
+    return (
+        "Une actualité d'ordre macroéconomique influence le sentiment global des "
+        "investisseurs, la liquidité du marché et peut " + sense +
+        " l'ensemble des compartiments de la cote BRVM."
+    )
+
+
 def _section_actualites(doc, source_buckets, source_doc):
     """Section 6 — Actualités du marché BRVM (pages 23-29 source).
 
@@ -1340,6 +1465,46 @@ def _section_actualites(doc, source_buckets, source_doc):
                     for r in p.runs:
                         r.font.size = Pt(8)
         doc.add_paragraph()
+
+        # Analyse d'impact détaillée pour chaque actualité présentée
+        _heading(doc, "Analyse d'impact détaillée sur la BRVM", 2)
+        for row in consolidated[:8]:
+            padded = (list(row) + [""] * 6)[:6]
+            cat_short, date, societe, titre, _src_impact, resume = padded
+            context_text = " ".join([cat_short, titre, resume])
+            sector_key = _detect_brvm_sector(context_text)
+            impact = _assess_brvm_impact(context_text)
+
+            entete = doc.add_paragraph()
+            entete.paragraph_format.space_after = Pt(2)
+            _bold(entete, f"• {date or ''} — {societe or 'BRVM'}", 10, "1558A7")
+            if titre:
+                _normal(entete, f" : {titre}", 10)
+
+            p_impact = doc.add_paragraph()
+            p_impact.paragraph_format.space_after = Pt(2)
+            _bold(p_impact, "⚡ Impact sur la BRVM : ", 10, "1A73E8")
+            _normal(p_impact, f"{impact}.", 10)
+
+            sector_info = _BRVM_SECTOR_TICKERS.get(sector_key)
+            p_soc = doc.add_paragraph()
+            p_soc.paragraph_format.space_after = Pt(2)
+            _bold(p_soc, "Sociétés concernées : ", 10)
+            if sector_info:
+                secteur_label, tickers = sector_info
+                soc_str = ", ".join(
+                    f"{tk} ({secteur_label})" for tk, _nom in tickers[:6]
+                )
+                _normal(p_soc, soc_str, 10)
+            else:
+                _normal(
+                    p_soc,
+                    "Ensemble du marché BRVM (impact transversal sur la cote).",
+                    10,
+                )
+
+            _para(doc, _brvm_impact_explanation(sector_key, impact))
+            doc.add_paragraph()
 
 
 # ── Section 9 — Alertes du jour (pages 34-37 source) ─────────────────────────
