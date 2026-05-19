@@ -1262,6 +1262,205 @@ def build_financial_analysis(doc, s: dict):
         _key_bloc(doc, "BILAN FINANCIER :", txt, "E8F0FB", "1558A7")
 
 
+# ── Données financières structurées (5 sous-sections) ───────────────────────
+
+def _emoji_bg(emoji: str) -> str:
+    """Couleur de fond de la cellule signal selon l'émoji."""
+    if "🟢" in emoji:
+        return "C6EFCE"
+    if "🟡" in emoji:
+        return "FFEB9C"
+    if "🔴" in emoji:
+        return "FFC7CE"
+    return "E3F2FD"  # 🔵 informatif
+
+
+def _ratio_emoji(val, good, vigilance, lower_better=False) -> str:
+    """Émoji selon la position de val par rapport aux seuils.
+    - lower_better=False (défaut) : >= good → 🟢, >= vigilance → 🟡, sinon 🔴.
+    - lower_better=True : <= good → 🟢, <= vigilance → 🟡, sinon 🔴.
+    Renvoie 🔵 si val n'est pas numériquement exploitable."""
+    f = _pct_to_float(val)
+    if f is None:
+        return "🔵"
+    if lower_better:
+        if f <= good:
+            return "🟢"
+        if f <= vigilance:
+            return "🟡"
+        return "🔴"
+    if f >= good:
+        return "🟢"
+    if f >= vigilance:
+        return "🟡"
+    return "🔴"
+
+
+def _build_financial_subtable(doc, s: dict, rows):
+    """
+    Tableau 4 colonnes (Indicateur · Valeur · Interprétation · Signal) pour
+    une sous-section financière. `rows` est une liste de tuples
+    (label, key, interpretation, emoji).
+    """
+    tbl = doc.add_table(rows=1 + len(rows), cols=4)
+    tbl.style = "Table Grid"
+    for i, h in enumerate(["Indicateur", "Valeur", "Interprétation", "Signal"]):
+        _cw(tbl.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
+
+    for i, (label, key, interp, emoji) in enumerate(rows, start=1):
+        val = _fmt_amount(s.get(key))
+        bg_val = "F5F5F5" if val == "—" else "FFFFFF"
+        # Si la valeur est absente, on neutralise l'émoji en 🔵 informatif
+        em = emoji if val != "—" else "🔵"
+        _cw(tbl.rows[i].cells[0], label, bold=True, size=8, bg="EBF0FA")
+        _cw(tbl.rows[i].cells[1], val, size=8, bg=bg_val)
+        _cw(tbl.rows[i].cells[2], interp, size=7, bg="FFFFFF")
+        _cw(tbl.rows[i].cells[3], em, size=10, bg=_emoji_bg(em),
+            align=WD_ALIGN_PARAGRAPH.CENTER)
+    doc.add_paragraph()
+
+
+def build_financial_data_complete(doc, s: dict):
+    """
+    Données financières structurées complètes (style fiche BOAC) :
+    1. BILAN ACTIF  2. BILAN PASSIF  3. COMPTE DE RÉSULTAT
+    4. RATIOS DE RENTABILITÉ  5. STRUCTURE & LIQUIDITÉ
+    Chaque indicateur : valeur (séparateur milliers) + interprétation + émoji
+    signal (🟢 positif / 🟡 vigilance / 🔴 négatif / 🔵 informatif).
+    Source et exercice indiqués en en-tête.
+    """
+    _section_heading(doc, "DONNÉES FINANCIÈRES STRUCTURÉES")
+
+    date_donnees = _fund_val(s, "date_donnees_financieres")
+    secteur = _s(s, "secteur", "—")
+    _narrative(
+        doc,
+        f"Source : rapport d'analyse BRVM   ·   Secteur : {secteur}   ·   "
+        f"Exercice de référence : {date_donnees}.",
+        size=8, italic=True, color="666666",
+    )
+
+    # ── 1. BILAN ACTIF
+    _sub_heading(doc, "1.  BILAN ACTIF")
+    _build_financial_subtable(doc, s, [
+        ("Caisse & Banque Centrale", "caisse_banque_centrale",
+         "Liquidités disponibles immédiatement.", "🟢"),
+        ("Effets publics", "effets_publics",
+         "Titres d'État détenus — actifs sûrs et liquides.", "🔵"),
+        ("Créances interbancaires", "creances_interbancaires",
+         "Prêts accordés aux autres établissements.", "🔵"),
+        ("Créances clientèle", "creances_clientele",
+         "Encours de crédits — moteur principal du PNB.", "🟢"),
+        ("Immob. incorporelles", "immob_incorporelles",
+         "Actifs immatériels (licences, logiciels).", "🔵"),
+        ("Immob. corporelles", "immob_corporelles",
+         "Bâtiments, agences, équipements.", "🔵"),
+        ("Trésorerie active", "tresorerie_actif",
+         "Disponibilités à court terme.", "🟢"),
+        ("Total actif", "total_actif",
+         "Taille de bilan globale.", "🔵"),
+    ])
+
+    # ── 2. BILAN PASSIF
+    _sub_heading(doc, "2.  BILAN PASSIF")
+    _build_financial_subtable(doc, s, [
+        ("Capital souscrit", "capital_souscrit",
+         "Apports en capital des actionnaires.", "🔵"),
+        ("Réserves", "reserves",
+         "Bénéfices accumulés non distribués.", "🟢"),
+        ("Capitaux propres", "capitaux_propres",
+         "Fonds propres totaux — solidité financière.", "🟢"),
+        ("Capitaux permanents", "capitaux_permanents",
+         "Capitaux propres + dettes longues — stabilité.", "🟢"),
+        ("Dettes interbancaires", "dettes_interbancaires",
+         "Refinancement auprès d'autres banques.", "🟡"),
+        ("Dettes clientèle", "dettes_clientele",
+         "Dépôts collectés — ressource principale.", "🔵"),
+        ("Dettes financières totales", "dettes_financieres_totales",
+         "Endettement financier global.", "🟡"),
+        ("Dettes totales", "dettes_totales",
+         "Passif exigible total.", "🟡"),
+    ])
+
+    # ── 3. COMPTE DE RÉSULTAT
+    _sub_heading(doc, "3.  COMPTE DE RÉSULTAT")
+    _build_financial_subtable(doc, s, [
+        ("PNB (Produit Net Bancaire)", "pnb",
+         "Chiffre d'affaires bancaire — agrégat d'activité.", "🟢"),
+        ("Intérêts produits", "interets_produits",
+         "Revenus des prêts et placements.", "🟢"),
+        ("Intérêts charges", "interets_charges",
+         "Coût de la collecte et du refinancement.", "🔴"),
+        ("Commissions produits", "commissions_produits",
+         "Revenus de services bancaires et frais.", "🟢"),
+        ("Charges générales", "charges_generales",
+         "Frais administratifs et d'exploitation.", "🟡"),
+        ("Charges de personnel", "charges_personnel",
+         "Masse salariale — premier poste de charge.", "🟡"),
+        ("RBE (Résultat Brut Expl.)", "rbe",
+         "Performance opérationnelle brute.", "🟢"),
+        ("Résultat d'exploitation", "resultat_exploitation",
+         "Rentabilité de l'activité courante.", "🟢"),
+        ("Provisions", "provisions",
+         "Coût du risque comptabilisé sur l'exercice.", "🟡"),
+        ("Résultat net", "resultat_net",
+         "Bénéfice final attribuable aux actionnaires.", "🟢"),
+    ])
+
+    # ── 4. RATIOS DE RENTABILITÉ
+    _sub_heading(doc, "4.  RATIOS DE RENTABILITÉ")
+    _build_financial_subtable(doc, s, [
+        ("Marge opérationnelle", "marge_operationnelle",
+         "Profitabilité de l'exploitation (cible ≥ 30%).",
+         _ratio_emoji(s.get("marge_operationnelle"), good=30, vigilance=15)),
+        ("Coefficient d'exploitation", "coefficient_exploitation",
+         "Charges / PNB — efficience (cible < 60%).",
+         _ratio_emoji(s.get("coefficient_exploitation"),
+                      good=60, vigilance=70, lower_better=True)),
+        ("Coût du risque", "cout_du_risque",
+         "Provisions / encours — qualité du portefeuille (< 1%).",
+         _ratio_emoji(s.get("cout_du_risque"),
+                      good=1, vigilance=2, lower_better=True)),
+        ("Marge nette", "marge_nette",
+         "Résultat net / PNB — rentabilité finale.",
+         _ratio_emoji(s.get("marge_nette"), good=15, vigilance=5)),
+        ("ROE", "roe",
+         "Rentabilité des fonds propres (cible ≥ 12%).",
+         _ratio_emoji(s.get("roe"), good=12, vigilance=5)),
+        ("ROA", "roa",
+         "Rentabilité des actifs (cible ≥ 1,5%).",
+         _ratio_emoji(s.get("roa"), good=1.5, vigilance=0.5)),
+    ])
+
+    # ── 5. STRUCTURE & LIQUIDITÉ
+    _sub_heading(doc, "5.  STRUCTURE & LIQUIDITÉ")
+    _build_financial_subtable(doc, s, [
+        ("Autonomie financière", "autonomie_financiere",
+         "Capitaux propres / total bilan — indépendance.",
+         _ratio_emoji(s.get("autonomie_financiere"), good=15, vigilance=8)),
+        ("Dépendance financière", "dependance_financiere",
+         "Dettes / total bilan — exposition au passif externe.",
+         _ratio_emoji(s.get("dependance_financiere"),
+                      good=70, vigilance=85, lower_better=True)),
+        ("Gearing", "gearing",
+         "Dettes / capitaux propres — levier d'endettement.",
+         _ratio_emoji(s.get("gearing"),
+                      good=1, vigilance=2, lower_better=True)),
+        ("Solvabilité générale", "solvabilite_generale",
+         "Actif / dettes — capacité de remboursement.",
+         _ratio_emoji(s.get("solvabilite_generale"),
+                      good=1.2, vigilance=1.05)),
+        ("Liquidité immédiate", "liquidite_immediate",
+         "Capacité à honorer les engagements courts (cible ≥ 1).",
+         _ratio_emoji(s.get("liquidite_immediate"),
+                      good=1, vigilance=0.5)),
+        ("Couverture des intérêts", "couverture_interets",
+         "Résultat d'exploitation / charges d'intérêts.",
+         _ratio_emoji(s.get("couverture_interets"),
+                      good=3, vigilance=1.5)),
+    ])
+
+
 def build_conclusion(doc, s: dict):
     """
     Conclusion d'investissement :
@@ -1444,6 +1643,8 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR", period_info: d
     build_fundamental_analysis(doc, s)       # Analyse fondamentale + risques + perspectives
     _add_separator(doc)
     build_financial_analysis(doc, s)         # Analyse financière détaillée (ratios, évolution, forces/faiblesses)
+    _add_separator(doc)
+    build_financial_data_complete(doc, s)    # Données financières structurées (Bilan / Compte de résultat / Ratios)
     _add_separator(doc)
     build_conclusion(doc, s)                 # Conclusion : matrice + divergences + action
     _pied(doc, date_str, freq, period_info)

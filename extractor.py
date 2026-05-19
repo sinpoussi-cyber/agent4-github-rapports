@@ -494,6 +494,24 @@ _EXTRA_FIELDS = (
     # Synthèse financière qualitative
     "forces_financieres", "faiblesses_financieres",
     "synthese_financiere", "date_donnees_financieres",
+    # ── Données financières structurées (banques / sociétés cotées) ──
+    # BILAN ACTIF
+    "caisse_banque_centrale", "effets_publics", "creances_interbancaires",
+    "creances_clientele", "immob_incorporelles", "immob_corporelles",
+    "tresorerie_actif", "total_actif",
+    # BILAN PASSIF
+    "capital_souscrit", "reserves", "capitaux_propres", "capitaux_permanents",
+    "dettes_interbancaires", "dettes_clientele", "dettes_financieres_totales",
+    "dettes_totales",
+    # COMPTE DE RÉSULTAT (resultat_net déjà inclus plus haut)
+    "pnb", "interets_produits", "interets_charges", "commissions_produits",
+    "charges_generales", "charges_personnel", "rbe", "resultat_exploitation",
+    "provisions",
+    # RATIOS DE RENTABILITÉ
+    "marge_operationnelle", "coefficient_exploitation", "cout_du_risque",
+    # STRUCTURE & LIQUIDITÉ
+    "autonomie_financiere", "dependance_financiere", "gearing",
+    "solvabilite_generale", "liquidite_immediate", "couverture_interets",
 )
 
 
@@ -543,7 +561,27 @@ def extract_extra(sections: dict, tickers: list) -> list:
         "max chacun (chaînes courtes <120 chars).\n"
         "15. synthese_financiere : 2-3 phrases résumant la santé financière.\n"
         "16. date_donnees_financieres : date de référence des données financières "
-        "(ex: '31/12/2025', 'T3 2025').\n\n"
+        "(ex: '31/12/2025', 'T3 2025').\n"
+        "17. DONNÉES FINANCIÈRES STRUCTURÉES (sections 'Bilan', 'Compte de "
+        "résultat', 'Ratios' du rapport — typique des banques BOAC/SGBCI/ETI...) :\n"
+        "    BILAN ACTIF (montants avec unité : ex '125,4 Mds FCFA') :\n"
+        "      caisse_banque_centrale, effets_publics, creances_interbancaires,\n"
+        "      creances_clientele, immob_incorporelles, immob_corporelles,\n"
+        "      tresorerie_actif, total_actif.\n"
+        "    BILAN PASSIF (montants avec unité) :\n"
+        "      capital_souscrit, reserves, capitaux_propres, capitaux_permanents,\n"
+        "      dettes_interbancaires, dettes_clientele, dettes_financieres_totales,\n"
+        "      dettes_totales.\n"
+        "    COMPTE DE RÉSULTAT (montants avec unité) :\n"
+        "      pnb (Produit Net Bancaire), interets_produits, interets_charges,\n"
+        "      commissions_produits, charges_generales, charges_personnel,\n"
+        "      rbe (Résultat Brut d'Exploitation), resultat_exploitation, provisions.\n"
+        "    RATIOS DE RENTABILITÉ (pourcentages avec %) :\n"
+        "      marge_operationnelle, coefficient_exploitation, cout_du_risque.\n"
+        "    STRUCTURE & LIQUIDITÉ (pourcentages avec % ou ratios numériques) :\n"
+        "      autonomie_financiere, dependance_financiere, gearing,\n"
+        "      solvabilite_generale, liquidite_immediate, couverture_interets.\n"
+        "    Toutes ces données : null si absentes — JAMAIS d'invention.\n\n"
         "Schéma exact :\n"
         "[\n"
         '  {\n'
@@ -578,7 +616,25 @@ def extract_extra(sections: dict, tickers: list) -> list:
         '    "forces_financieres": ["Marge nette stable", "Faible endettement", "Croissance régulière du CA"],\n'
         '    "faiblesses_financieres": ["ROE en baisse", "Dividende non distribué", "Liquidité limitée"],\n'
         '    "synthese_financiere": "Société aux fondamentaux solides malgré une rentabilité en repli. La structure financière reste saine avec un endettement maîtrisé.",\n'
-        '    "date_donnees_financieres": "31/12/2025"\n'
+        '    "date_donnees_financieres": "31/12/2025",\n'
+        '    "caisse_banque_centrale": "85,2 Mds FCFA", "effets_publics": "142,7 Mds FCFA",\n'
+        '    "creances_interbancaires": "67,3 Mds FCFA", "creances_clientele": "920,5 Mds FCFA",\n'
+        '    "immob_incorporelles": "2,1 Mds FCFA", "immob_corporelles": "28,4 Mds FCFA",\n'
+        '    "tresorerie_actif": "152,8 Mds FCFA", "total_actif": "1 425,6 Mds FCFA",\n'
+        '    "capital_souscrit": "30,0 Mds FCFA", "reserves": "78,5 Mds FCFA",\n'
+        '    "capitaux_propres": "118,2 Mds FCFA", "capitaux_permanents": "245,7 Mds FCFA",\n'
+        '    "dettes_interbancaires": "95,3 Mds FCFA", "dettes_clientele": "1 048,7 Mds FCFA",\n'
+        '    "dettes_financieres_totales": "127,5 Mds FCFA", "dettes_totales": "1 307,4 Mds FCFA",\n'
+        '    "pnb": "82,5 Mds FCFA", "interets_produits": "65,1 Mds FCFA",\n'
+        '    "interets_charges": "21,4 Mds FCFA", "commissions_produits": "18,8 Mds FCFA",\n'
+        '    "charges_generales": "18,2 Mds FCFA", "charges_personnel": "22,6 Mds FCFA",\n'
+        '    "rbe": "41,7 Mds FCFA", "resultat_exploitation": "35,8 Mds FCFA",\n'
+        '    "provisions": "5,9 Mds FCFA",\n'
+        '    "marge_operationnelle": "43,4%", "coefficient_exploitation": "49,5%",\n'
+        '    "cout_du_risque": "0,6%",\n'
+        '    "autonomie_financiere": "8,3%", "dependance_financiere": "91,7%",\n'
+        '    "gearing": "1,08", "solvabilite_generale": "1,09",\n'
+        '    "liquidite_immediate": "0,75", "couverture_interets": "3,8"\n'
         "  }\n"
         "]\n\n"
         f"TEXTE SOURCE :\n{ticker_context}"
@@ -587,7 +643,7 @@ def extract_extra(sections: dict, tickers: list) -> list:
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             msg = client.messages.create(
-                model=_MODEL, max_tokens=6144,
+                model=_MODEL, max_tokens=8192,
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = msg.content[0].text.strip()
