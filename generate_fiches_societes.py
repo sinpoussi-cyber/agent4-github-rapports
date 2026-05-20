@@ -35,16 +35,32 @@ _TICKER_RE = re.compile(
     r'\b([A-Z]{2,8}(?:CI|BF|SN|ML|TG|GN|BN|NE|GW)?)\b'
 )
 # Mots courants à exclure pour éviter les faux positifs
+# (recommandations, niveaux de risque, abréviations financières, etc.)
 _TICKER_STOPWORDS = {
+    # Recommandations / signaux
+    "ACHAT", "VENTE", "NEUTRE", "FORT", "FAIBLE", "CONSERVER", "SURVEILLER",
+    "PRUDENCE", "EVITER", "ÉVITER", "POSITIF", "NEGATIF", "NÉGATIF",
+    "HAUSSIER", "BAISSIER",
+    # Niveaux de risque / qualité
+    "RISQUE", "ELEVE", "ÉLEVÉ", "MOYEN", "BAS", "HAUTE", "FORTE",
+    # Indicateurs techniques
+    "RSI", "MM", "EMA", "MACD", "STOCH", "BOLL", "ADX", "OBV", "CCI",
+    "WRI", "BBG", "ATH", "ATL",
+    # Statistiques / mesures
+    "CV", "VOL", "MAX", "MIN", "AVG", "TOP", "FLOP", "NB",
+    # Entités financières génériques
     "BRVM", "FCFA", "UEMOA", "PDG", "DG", "CA", "PNB", "RBE", "ROE", "ROA",
     "PER", "SG", "BNP", "CIB", "USD", "EUR", "XOF", "BCE", "FMI", "BM",
     "SA", "SAS", "SARL", "NV", "SE", "AG", "LTD", "PLC", "INC", "LLC",
-    "TOP", "VOL", "MAX", "MIN", "AVG", "RSI", "MM", "EMA", "ATH", "ATL",
-    "MACD", "STOCH", "BOLL", "ADX", "OBV", "CCI", "WRI", "BBG",
+    # Secteurs / types
+    "BANQUE", "ASSURANCE", "TELECOM", "INDUSTRIE", "AGRICOLE", "FINANCE",
+    # Divers rapports
+    "NOTE", "FICHE", "ALERTE", "SCORE", "RANG", "ANALYSE",
 }
-# Distance maximale (en éléments body) entre un paragraphe mentionnant un ticker
-# et l'image qui le suit pour qu'on les associe
-_IMG_MAX_DIST = 12
+# Distance maximale (en éléments body) entre le dernier ticker vu et une image.
+# Le rapport source place les graphiques ~20-50 éléments après le titre de section.
+# On utilise une valeur large car on filtre ensuite avec known_tickers.
+_IMG_MAX_DIST = 80
 
 
 # ── Helpers bas niveau ────────────────────────────────────────────────────────
@@ -275,29 +291,33 @@ def _blob_to_png(blob: bytes, ticker: str = "?") -> bytes | None:
 def _extract_images_from_docx(doc_bytes: bytes,
                                known_tickers: list | None = None) -> dict:
     """
-    Parcourt le document Word source dans l'ordre du body et associe chaque
-    image embarquée (w:drawing) au ticker qui la précède dans le texte.
+    Extrait les graphiques du document Word source et les associe à leur ticker.
 
-    Stratégie d'association :
-      1. On maintient un ``last_ticker`` mis à jour à chaque paragraphe
-         contenant un ticker reconnu.
-      2. Dès qu'un w:drawing est rencontré (dans un paragraphe OU dans une
-         cellule de tableau), on l'associe à ``last_ticker`` si la distance
-         (en éléments body) depuis ce ticker est ≤ _IMG_MAX_DIST.
-      3. Si plusieurs images sont trouvées pour le même ticker, on garde la
-         plus grande (proxy de qualité / résolution).
-      4. Les blobs sont convertis en PNG via _blob_to_png() avant stockage.
+    Stratégie en deux passes :
+
+    Passe 1 — collecte séquentielle
+        On parcourt le body dans l'ordre et on construit deux listes parallèles :
+          - ``elements_info`` : (index, type, texte, blobs)
+          - En identifiant les tickers dans le texte et les images dans les éléments.
+
+    Passe 2 — association par recherche arrière (remontée)
+        Pour chaque image trouvée (index i), on remonte les éléments précédents
+        jusqu'à trouver le premier ticker BRVM valide (known_tickers en priorité).
+        On s'arrête au bout de _IMG_MAX_DIST éléments remontés.
+        Cette approche est robuste même si le ticker est dans le titre de section,
+        30-50 éléments avant l'image.
+
+    Filtre qualité : on ignore les blobs < 5 KB (icônes, logos).
+    En cas de doublon, on garde l'image la plus grande pour chaque ticker.
 
     Paramètres
     ----------
     doc_bytes      : bytes du .docx source
-    known_tickers  : liste des tickers déjà identifiés par l'extractor LLM
-                     (filtre facultatif — si None, tous les tokens uppercase
-                     sont candidats)
+    known_tickers  : liste des tickers LLM (filtre prioritaire)
 
     Retourne
     --------
-    dict[ticker_str -> png_bytes]  — peut être vide si aucune image n'est trouvée.
+    dict[ticker_str -> png_bytes]
     """
     try:
         doc = Document(io.BytesIO(doc_bytes))
@@ -306,23 +326,28 @@ def _extract_images_from_docx(doc_bytes: bytes,
         return {}
 
     kt_set = set(t.upper() for t in (known_tickers or []))
-    images_map: dict[str, bytes] = {}
-    last_ticker: str | None = None
-    dist_since_ticker: int = 0   # éléments body traversés depuis last_ticker
 
-    def _find_ticker_in_text(text: str) -> str | None:
-        """Retourne le premier ticker BRVM valide trouvé dans text, ou None."""
+    # ── Helpers internes ──────────────────────────────────────────────────────
+
+    def _find_tickers_in_text(text: str) -> list[str]:
+        """
+        Retourne tous les tickers BRVM valides trouvés dans text.
+        Priorité : known_tickers d'abord, puis tokens uppercase non-stopwords.
+        """
+        found = []
         for m in _TICKER_RE.finditer(text):
             cand = m.group(1)
             if cand in _TICKER_STOPWORDS:
                 continue
+            # Si on a des known_tickers, ne garder que ceux-là
             if kt_set and cand not in kt_set:
                 continue
-            return cand
-        return None
+            if cand not in found:
+                found.append(cand)
+        return found
 
-    def _extract_drawings_from_element(element) -> list[bytes]:
-        """Retourne la liste des blobs bruts des images dans un élément XML."""
+    def _blobs_from_element(element) -> list[bytes]:
+        """Extrait tous les blobs d'images d'un élément XML (y compris imbriqués)."""
         blobs = []
         for drawing in element.findall(".//" + qn("w:drawing")):
             for blip in drawing.findall(".//" + _BLIP_TAG):
@@ -333,86 +358,76 @@ def _extract_images_from_docx(doc_bytes: bytes,
                 if rel is None:
                     continue
                 try:
-                    blobs.append(rel.target_part.blob)
+                    b = rel.target_part.blob
+                    if len(b) >= 5_000:   # ignorer icônes/logos < 5 KB
+                        blobs.append(b)
+                    else:
+                        print(f"  [Fiches/ImgExtract] blob ignoré ({len(b)} bytes — trop petit)")
                 except Exception:
                     pass
         return blobs
 
-    def _store_image(ticker: str, blob: bytes):
-        """Convertit et stocke l'image si elle est plus grande que l'existante."""
-        existing = images_map.get(ticker)
-        # Filtre de taille minimale : ignorer les petites icônes / logos (< 5 KB)
-        if len(blob) < 5_000:
-            print(f"  [Fiches/ImgExtract] {ticker} : blob ignoré (trop petit, "
-                  f"{len(blob)} bytes — probablement icône)")
-            return
-        if existing is not None and len(blob) <= len(existing):
-            return  # on conserve le plus grand
-        png = _blob_to_png(blob, ticker)
-        if png:
-            images_map[ticker] = png
+    # ── Passe 1 : collecte ────────────────────────────────────────────────────
+    # Chaque entrée : {"idx": int, "tickers": list[str], "blobs": list[bytes]}
+    elements_info = []
 
-    # ── Parcours du body ──────────────────────────────────────────────────────
-    for child in doc.element.body.iterchildren():
+    for idx, child in enumerate(doc.element.body.iterchildren()):
         tag = child.tag
+        entry = {"idx": idx, "tickers": [], "blobs": []}
 
         if tag == qn("w:p"):
-            # 1. Chercher un ticker dans le texte du paragraphe
             texts = [n.text for n in child.iter() if n.text and n.text.strip()]
             para_text = " ".join(texts)
-            found_ticker = _find_ticker_in_text(para_text)
-            if found_ticker:
-                last_ticker = found_ticker
-                dist_since_ticker = 0
-
-            # 2. Chercher des images dans ce même paragraphe
-            blobs = _extract_drawings_from_element(child)
-            if blobs and last_ticker and dist_since_ticker <= _IMG_MAX_DIST:
-                for blob in blobs:
-                    _store_image(last_ticker, blob)
-
-            dist_since_ticker += 1
+            entry["tickers"] = _find_tickers_in_text(para_text)
+            entry["blobs"]   = _blobs_from_element(child)
 
         elif tag == qn("w:tbl"):
-            # Parcourir chaque ligne × cellule du tableau pour trouver
-            # à la fois des tickers et des images, dans l'ordre DOM
-            blobs_in_table: list[bytes] = []
-            ticker_in_table: str | None = None
+            # Parcourir toutes les cellules pour texte + images
+            all_cell_text = []
+            for tc in child.findall(".//" + qn("w:tc")):
+                cell_texts = [n.text for n in tc.iter() if n.text and n.text.strip()]
+                all_cell_text.extend(cell_texts)
+                entry["blobs"].extend(_blobs_from_element(tc))
+            entry["tickers"] = _find_tickers_in_text(" ".join(all_cell_text))
 
-            for row_el in child.findall(".//" + qn("w:tr")):
-                for cell_el in row_el.findall(".//" + qn("w:tc")):
-                    # Texte de la cellule
-                    cell_texts = [
-                        n.text for n in cell_el.iter()
-                        if n.text and n.text.strip()
-                    ]
-                    cell_text = " ".join(cell_texts)
-                    cand = _find_ticker_in_text(cell_text)
-                    if cand:
-                        ticker_in_table = cand
-                        last_ticker = cand
-                        dist_since_ticker = 0
+        elements_info.append(entry)
 
-                    # Images dans la cellule
-                    blobs_in_table.extend(_extract_drawings_from_element(cell_el))
+    # ── Passe 2 : association par remontée ────────────────────────────────────
+    images_map: dict[str, bytes] = {}
 
-            # Associer les images du tableau au ticker trouvé dans ce tableau
-            # ou, à défaut, au dernier ticker vu dans le flux du document
-            target = ticker_in_table or (
-                last_ticker if dist_since_ticker <= _IMG_MAX_DIST else None
-            )
-            if target and blobs_in_table:
-                for blob in blobs_in_table:
-                    _store_image(target, blob)
+    for i, entry in enumerate(elements_info):
+        if not entry["blobs"]:
+            continue
 
-            dist_since_ticker += 1
+        # Remonter les éléments précédents pour trouver le ticker le plus proche
+        associated_ticker: str | None = None
+        for back in range(0, min(_IMG_MAX_DIST, i + 1)):
+            prev = elements_info[i - back]
+            if prev["tickers"]:
+                # Prendre le dernier ticker de l'élément précédent
+                # (le plus proche sémantiquement du graphique)
+                associated_ticker = prev["tickers"][-1]
+                break
+
+        if associated_ticker is None:
+            print(f"  [Fiches/ImgExtract] image(s) à l'index {i} : aucun ticker "
+                  f"trouvé dans les {_IMG_MAX_DIST} éléments précédents — ignorée(s)")
+            continue
+
+        for blob in entry["blobs"]:
+            existing = images_map.get(associated_ticker)
+            if existing is not None and len(blob) <= len(existing):
+                continue  # garder le plus grand
+            png = _blob_to_png(blob, associated_ticker)
+            if png:
+                images_map[associated_ticker] = png
 
     nb = len(images_map)
     if nb:
-        print(f"  [Fiches/ImgExtract] {nb} image(s) extraite(s) du document source : "
+        print(f"  [Fiches/ImgExtract] {nb} graphique(s) associé(s) : "
               f"{list(images_map.keys())}")
     else:
-        print("  [Fiches/ImgExtract] Aucune image associée à un ticker dans le document source.")
+        print("  [Fiches/ImgExtract] Aucun graphique associé à un ticker.")
     return images_map
 
 
@@ -424,10 +439,29 @@ def _build_price_chart_png(s: dict, width_in: float = 6.5, height_in: float = 2.
     Retourne les bytes PNG ; None si données insuffisantes.
     """
     debut = _to_float(s.get("cours_debut"))
-    fin = _to_float(s.get("cours_fin")) or _to_float(s.get("cours"))
-    haut = _to_float(s.get("plus_haut_100j"))
-    bas = _to_float(s.get("plus_bas_100j"))
+    fin   = _to_float(s.get("cours_fin")) or _to_float(s.get("cours"))
+    haut  = _to_float(s.get("plus_haut_100j"))
+    bas   = _to_float(s.get("plus_bas_100j"))
+
+    # Reconstruire cours_debut depuis perf_100j si absent :
+    # cours_debut = cours_fin / (1 + perf/100)
+    if debut is None and fin is not None:
+        perf_str = str(s.get("perf_100j") or "").replace("%", "").replace("+", "").strip()
+        if perf_str:
+            try:
+                perf_val = float(perf_str.replace(",", "."))
+                debut = fin / (1 + perf_val / 100)
+                print(f"  [Fiches/Chart] {s.get('ticker')} : cours_debut calculé "
+                      f"depuis perf_100j={perf_str}% → {debut:.0f}")
+            except (ValueError, ZeroDivisionError):
+                pass
+
     if debut is None or fin is None or haut is None or bas is None:
+        missing = [k for k, v in [("cours_debut", debut), ("cours_fin", fin),
+                                   ("plus_haut_100j", haut), ("plus_bas_100j", bas)]
+                   if v is None]
+        print(f"  [Fiches/Chart] {s.get('ticker')} : données manquantes {missing} — "
+              "graphique matplotlib impossible")
         return None
     if haut < bas:
         haut, bas = bas, haut
