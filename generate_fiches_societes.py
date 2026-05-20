@@ -1,7 +1,9 @@
 import io
 import math
 import os
+import re
 import random
+import subprocess
 import tempfile
 from datetime import date
 
@@ -9,6 +11,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
+
+from PIL import Image as _PILImage
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -19,6 +23,28 @@ from extractor import extract_all
 from enricher import enrich
 
 _MARGIN_CM = 1.5
+
+# ── Namespaces OOXML pour extraction d'images ─────────────────────────────────
+_A_NS      = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_R_NS      = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_BLIP_TAG  = "{%s}blip"  % _A_NS
+_EMBED_ATTR = "{%s}embed" % _R_NS
+
+# RE pour détecter les tickers BRVM dans le texte (2-8 majuscules + suffixe pays optionnel)
+_TICKER_RE = re.compile(
+    r'\b([A-Z]{2,8}(?:CI|BF|SN|ML|TG|GN|BN|NE|GW)?)\b'
+)
+# Mots courants à exclure pour éviter les faux positifs
+_TICKER_STOPWORDS = {
+    "BRVM", "FCFA", "UEMOA", "PDG", "DG", "CA", "PNB", "RBE", "ROE", "ROA",
+    "PER", "SG", "BNP", "CIB", "USD", "EUR", "XOF", "BCE", "FMI", "BM",
+    "SA", "SAS", "SARL", "NV", "SE", "AG", "LTD", "PLC", "INC", "LLC",
+    "TOP", "VOL", "MAX", "MIN", "AVG", "RSI", "MM", "EMA", "ATH", "ATL",
+    "MACD", "STOCH", "BOLL", "ADX", "OBV", "CCI", "WRI", "BBG",
+}
+# Distance maximale (en éléments body) entre un paragraphe mentionnant un ticker
+# et l'image qui le suit pour qu'on les associe
+_IMG_MAX_DIST = 12
 
 
 # ── Helpers bas niveau ────────────────────────────────────────────────────────
@@ -157,7 +183,7 @@ def _to_float(v):
         return None
     if isinstance(v, (int, float)):
         return float(v)
-    s = str(v).strip().replace(" ", "").replace(" ", "")
+    s = str(v).strip().replace(" ", "").replace("\u00a0", "")
     if not s:
         return None
     if "," in s and "." in s:
@@ -171,6 +197,223 @@ def _to_float(v):
         return float(s)
     except ValueError:
         return None
+
+
+# ── Extraction des images depuis le document Word source ──────────────────────
+
+def _detect_img_type(blob: bytes) -> str:
+    """Détecte le format d'image à partir des magic bytes."""
+    if blob[:4] == b"\x89PNG":
+        return "png"
+    if blob[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if blob[:4] == b"GIF8":
+        return "gif"
+    if blob[:4] == bytes([0xD7, 0xCD, 0xC6, 0x9A]):
+        return "wmf"
+    if blob[:4] == bytes([0x01, 0x00, 0x00, 0x00]):
+        return "emf"
+    return "unknown"
+
+
+def _blob_to_png(blob: bytes, ticker: str = "?") -> bytes | None:
+    """
+    Convertit un blob image (PNG, JPEG, GIF, EMF, WMF) en bytes PNG prêts
+    à être insérés dans python-docx via add_picture().
+
+    - PNG / JPEG / GIF  → PIL (direct, sans aller sur disque)
+    - EMF / WMF         → LibreOffice headless (fichier temporaire)
+    - Inconnu           → retour None (fallback matplotlib)
+    """
+    img_type = _detect_img_type(blob)
+
+    if img_type in ("png", "jpeg", "gif"):
+        try:
+            img = _PILImage.open(io.BytesIO(blob))
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            result = buf.getvalue()
+            print(f"  [Fiches/ImgExtract] {ticker} : {img_type.upper()} → PNG "
+                  f"{img.size[0]}×{img.size[1]}px ({len(result)} bytes)")
+            return result
+        except Exception as exc:
+            print(f"  [Fiches/ImgExtract] {ticker} : PIL échec sur {img_type} — {exc}")
+            # Pour PNG, renvoyer le blob brut si PIL échoue (peut fonctionner quand même)
+            return blob if img_type == "png" else None
+
+    if img_type in ("emf", "wmf"):
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                in_path = os.path.join(tmpdir, f"img.{img_type}")
+                with open(in_path, "wb") as fh:
+                    fh.write(blob)
+                r = subprocess.run(
+                    ["libreoffice", "--headless", "--convert-to", "png",
+                     "--outdir", tmpdir, in_path],
+                    capture_output=True, timeout=20,
+                )
+                out_path = os.path.join(tmpdir, "img.png")
+                if os.path.exists(out_path):
+                    with open(out_path, "rb") as fh:
+                        result = fh.read()
+                    print(f"  [Fiches/ImgExtract] {ticker} : {img_type.upper()} → PNG "
+                          f"via LibreOffice ({len(result)} bytes)")
+                    return result
+                else:
+                    print(f"  [Fiches/ImgExtract] {ticker} : LibreOffice n'a pas produit "
+                          f"de PNG (stderr: {r.stderr[:120].decode(errors='replace')})")
+        except Exception as exc:
+            print(f"  [Fiches/ImgExtract] {ticker} : LibreOffice échec — {exc}")
+        return None
+
+    print(f"  [Fiches/ImgExtract] {ticker} : format inconnu ({blob[:4].hex()}) — ignoré")
+    return None
+
+
+def _extract_images_from_docx(doc_bytes: bytes,
+                               known_tickers: list | None = None) -> dict:
+    """
+    Parcourt le document Word source dans l'ordre du body et associe chaque
+    image embarquée (w:drawing) au ticker qui la précède dans le texte.
+
+    Stratégie d'association :
+      1. On maintient un ``last_ticker`` mis à jour à chaque paragraphe
+         contenant un ticker reconnu.
+      2. Dès qu'un w:drawing est rencontré (dans un paragraphe OU dans une
+         cellule de tableau), on l'associe à ``last_ticker`` si la distance
+         (en éléments body) depuis ce ticker est ≤ _IMG_MAX_DIST.
+      3. Si plusieurs images sont trouvées pour le même ticker, on garde la
+         plus grande (proxy de qualité / résolution).
+      4. Les blobs sont convertis en PNG via _blob_to_png() avant stockage.
+
+    Paramètres
+    ----------
+    doc_bytes      : bytes du .docx source
+    known_tickers  : liste des tickers déjà identifiés par l'extractor LLM
+                     (filtre facultatif — si None, tous les tokens uppercase
+                     sont candidats)
+
+    Retourne
+    --------
+    dict[ticker_str -> png_bytes]  — peut être vide si aucune image n'est trouvée.
+    """
+    try:
+        doc = Document(io.BytesIO(doc_bytes))
+    except Exception as exc:
+        print(f"  [Fiches/ImgExtract] Impossible d'ouvrir le document source — {exc}")
+        return {}
+
+    kt_set = set(t.upper() for t in (known_tickers or []))
+    images_map: dict[str, bytes] = {}
+    last_ticker: str | None = None
+    dist_since_ticker: int = 0   # éléments body traversés depuis last_ticker
+
+    def _find_ticker_in_text(text: str) -> str | None:
+        """Retourne le premier ticker BRVM valide trouvé dans text, ou None."""
+        for m in _TICKER_RE.finditer(text):
+            cand = m.group(1)
+            if cand in _TICKER_STOPWORDS:
+                continue
+            if kt_set and cand not in kt_set:
+                continue
+            return cand
+        return None
+
+    def _extract_drawings_from_element(element) -> list[bytes]:
+        """Retourne la liste des blobs bruts des images dans un élément XML."""
+        blobs = []
+        for drawing in element.findall(".//" + qn("w:drawing")):
+            for blip in drawing.findall(".//" + _BLIP_TAG):
+                rId = blip.get(_EMBED_ATTR)
+                if not rId:
+                    continue
+                rel = doc.part.rels.get(rId)
+                if rel is None:
+                    continue
+                try:
+                    blobs.append(rel.target_part.blob)
+                except Exception:
+                    pass
+        return blobs
+
+    def _store_image(ticker: str, blob: bytes):
+        """Convertit et stocke l'image si elle est plus grande que l'existante."""
+        existing = images_map.get(ticker)
+        # Filtre de taille minimale : ignorer les petites icônes / logos (< 5 KB)
+        if len(blob) < 5_000:
+            print(f"  [Fiches/ImgExtract] {ticker} : blob ignoré (trop petit, "
+                  f"{len(blob)} bytes — probablement icône)")
+            return
+        if existing is not None and len(blob) <= len(existing):
+            return  # on conserve le plus grand
+        png = _blob_to_png(blob, ticker)
+        if png:
+            images_map[ticker] = png
+
+    # ── Parcours du body ──────────────────────────────────────────────────────
+    for child in doc.element.body.iterchildren():
+        tag = child.tag
+
+        if tag == qn("w:p"):
+            # 1. Chercher un ticker dans le texte du paragraphe
+            texts = [n.text for n in child.iter() if n.text and n.text.strip()]
+            para_text = " ".join(texts)
+            found_ticker = _find_ticker_in_text(para_text)
+            if found_ticker:
+                last_ticker = found_ticker
+                dist_since_ticker = 0
+
+            # 2. Chercher des images dans ce même paragraphe
+            blobs = _extract_drawings_from_element(child)
+            if blobs and last_ticker and dist_since_ticker <= _IMG_MAX_DIST:
+                for blob in blobs:
+                    _store_image(last_ticker, blob)
+
+            dist_since_ticker += 1
+
+        elif tag == qn("w:tbl"):
+            # Parcourir chaque ligne × cellule du tableau pour trouver
+            # à la fois des tickers et des images, dans l'ordre DOM
+            blobs_in_table: list[bytes] = []
+            ticker_in_table: str | None = None
+
+            for row_el in child.findall(".//" + qn("w:tr")):
+                for cell_el in row_el.findall(".//" + qn("w:tc")):
+                    # Texte de la cellule
+                    cell_texts = [
+                        n.text for n in cell_el.iter()
+                        if n.text and n.text.strip()
+                    ]
+                    cell_text = " ".join(cell_texts)
+                    cand = _find_ticker_in_text(cell_text)
+                    if cand:
+                        ticker_in_table = cand
+                        last_ticker = cand
+                        dist_since_ticker = 0
+
+                    # Images dans la cellule
+                    blobs_in_table.extend(_extract_drawings_from_element(cell_el))
+
+            # Associer les images du tableau au ticker trouvé dans ce tableau
+            # ou, à défaut, au dernier ticker vu dans le flux du document
+            target = ticker_in_table or (
+                last_ticker if dist_since_ticker <= _IMG_MAX_DIST else None
+            )
+            if target and blobs_in_table:
+                for blob in blobs_in_table:
+                    _store_image(target, blob)
+
+            dist_since_ticker += 1
+
+    nb = len(images_map)
+    if nb:
+        print(f"  [Fiches/ImgExtract] {nb} image(s) extraite(s) du document source : "
+              f"{list(images_map.keys())}")
+    else:
+        print("  [Fiches/ImgExtract] Aucune image associée à un ticker dans le document source.")
+    return images_map
 
 
 def _build_price_chart_png(s: dict, width_in: float = 6.5, height_in: float = 2.6) -> bytes:
@@ -190,8 +433,6 @@ def _build_price_chart_png(s: dict, width_in: float = 6.5, height_in: float = 2.
         haut, bas = bas, haut
 
     # ── Reconstruction d'une trajectoire 100 séances ancrée sur les 4 points connus.
-    # Position des extrema : le premier extrémum atteint est celui le plus éloigné
-    # du cours de départ ; l'autre extrémum après. Seed déterministe par ticker.
     n = 100
     rng = random.Random(hash(str(s.get("ticker") or "")) & 0xFFFFFFFF)
     if abs(haut - debut) >= abs(bas - debut):
@@ -225,11 +466,9 @@ def _build_price_chart_png(s: dict, width_in: float = 6.5, height_in: float = 2.
     ax.fill_between(xs, ys, min(ys) - (haut - bas) * 0.05,
                     color="#1A73E8", alpha=0.07, zorder=1)
 
-    # Tendance linéaire start -> end
     ax.plot([0, n - 1], [debut, fin], linestyle="--", color="#888888",
             linewidth=1.2, zorder=2, label="Tendance")
 
-    # Marqueurs plus haut / plus bas
     ax.scatter([i_high], [haut], color="#0F9D58", s=42, zorder=5, edgecolor="white")
     ax.scatter([i_low], [bas], color="#D93025", s=42, zorder=5, edgecolor="white")
     ax.annotate(f"+ haut\n{haut:,.0f}".replace(",", " "),
@@ -239,10 +478,8 @@ def _build_price_chart_png(s: dict, width_in: float = 6.5, height_in: float = 2.
                 xy=(i_low, bas), xytext=(0, -22), textcoords="offset points",
                 ha="center", fontsize=7, color="#D93025", weight="bold")
 
-    # Marqueurs début / fin
     ax.scatter([0, n - 1], [debut, fin], color="#1A237E", s=22, zorder=4)
 
-    # Cosmétique
     date_d = str(s.get("date_debut_100j") or "J-100")
     date_f = str(s.get("date_fin_100j") or "J")
     ax.set_xticks([0, n // 2, n - 1])
@@ -269,7 +506,7 @@ def _build_price_chart_png(s: dict, width_in: float = 6.5, height_in: float = 2.
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
     plt.close(fig)
     png_bytes = buf.getvalue()
-    print(f"  [Fiches/Chart] {s.get('ticker')} : PNG size {len(png_bytes)} bytes")
+    print(f"  [Fiches/Chart] {s.get('ticker')} : PNG matplotlib {len(png_bytes)} bytes")
     return png_bytes
 
 
@@ -613,14 +850,14 @@ def _extract_text(doc_bytes: bytes) -> str:
     parts = []
     table_idx = 0
     for child in doc.element.body.iterchildren():
-        if child.tag == qn('w:p'):
+        if child.tag == qn("w:p"):
             p = para_by_id.get(id(child))
             if p is None:
                 continue
             txt = p.text.strip()
             if txt:
                 parts.append(txt)
-        elif child.tag == qn('w:tbl'):
+        elif child.tag == qn("w:tbl"):
             t = table_by_id.get(id(child))
             if t is None:
                 continue
@@ -631,10 +868,10 @@ def _extract_text(doc_bytes: bytes) -> str:
                     raw = cell.text.strip()
                     if not raw:
                         continue
-                    if '\n' in raw:
-                        k, v = raw.split('\n', 1)
+                    if "\n" in raw:
+                        k, v = raw.split("\n", 1)
                         k, v = k.strip(), v.strip()
-                        if v and v.lower() != 'none':
+                        if v and v.lower() != "none":
                             kv_lines.append(f"  {k}: {v}")
                     else:
                         kv_lines.append(f"  {raw}")
@@ -835,18 +1072,42 @@ def build_market_table(doc, s: dict):
         _cw(tbl.rows[i].cells[3], rv, size=8, bg=rbg)
 
 
-def build_chart_comment(doc, s: dict):
+def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
     """
-    Graphique matplotlib + commentaire analytique de la courbe.
-    Couvre : tendance, volatilité, momentum, phase de marché.
-    """
-    # ── Graphique réel (PNG matplotlib) si données disponibles
-    png_bytes = None
-    try:
-        png_bytes = _build_price_chart_png(s)
-    except Exception as exc:
-        print(f"  [Fiches/Chart] {s.get('ticker')} : échec génération chart — {exc}")
+    Graphique + commentaire analytique de la courbe.
 
+    Priorité d'affichage :
+      1. ``source_png``  — image extraite directement du document Word source
+                           (graphique original : plus précis, plus fidèle).
+      2. Graphique matplotlib reconstruit à partir des 4 bornes numériques
+         (cours_debut / cours_fin / plus_haut_100j / plus_bas_100j).
+      3. Message d'absence si aucune des deux sources n'est disponible.
+
+    Paramètres
+    ----------
+    source_png : bytes PNG pré-extraits par _extract_images_from_docx(), ou None.
+    """
+    ticker = _s(s, "ticker", "?")
+    png_bytes: bytes | None = None
+    chart_origin: str = ""
+
+    # ── 1. Image source (priorité absolue) ───────────────────────────────────
+    if source_png and len(source_png) > 1000:
+        png_bytes = source_png
+        chart_origin = "source Word"
+        print(f"  [Fiches/Chart] {ticker} : utilisation du graphique source Word "
+              f"({len(png_bytes)} bytes)")
+
+    # ── 2. Fallback matplotlib ────────────────────────────────────────────────
+    if png_bytes is None:
+        try:
+            png_bytes = _build_price_chart_png(s)
+            if png_bytes:
+                chart_origin = "matplotlib (reconstruction)"
+        except Exception as exc:
+            print(f"  [Fiches/Chart] {ticker} : échec matplotlib — {exc}")
+
+    # ── Insertion de l'image dans le document ─────────────────────────────────
     if png_bytes and len(png_bytes) > 1000:
         p_img = doc.add_paragraph()
         p_img.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -857,14 +1118,38 @@ def build_chart_comment(doc, s: dict):
             tmp_path = tmp.name
         try:
             p_img.add_run().add_picture(tmp_path, width=Cm(16))
+        except Exception as exc:
+            print(f"  [Fiches/Chart] {ticker} : add_picture() échec — {exc}")
+            # Paragraphe d'erreur si l'insertion échoue
+            p_img.clear()
+            r_err = p_img.add_run(
+                f"[Graphique disponible mais non inséré — erreur technique : {exc}]"
+            )
+            r_err.italic = True
+            r_err.font.size = Pt(9)
+            r_err.font.color.rgb = _rgb("C0392B")
         finally:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+        # Légende discrète sous le graphique
+        p_leg = doc.add_paragraph()
+        p_leg.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_leg.paragraph_format.space_before = Pt(0)
+        p_leg.paragraph_format.space_after = Pt(4)
+        r_leg = p_leg.add_run(
+            f"Graphique — {chart_origin} · {ticker}"
+        )
+        r_leg.italic = True
+        r_leg.font.size = Pt(7)
+        r_leg.font.color.rgb = _rgb("AAAAAA")
+
     else:
         if png_bytes is not None:
-            print(f"  [Fiches/Chart] {s.get('ticker')} : PNG trop petit ({len(png_bytes)} bytes) — ignoré")
+            print(f"  [Fiches/Chart] {ticker} : PNG trop petit "
+                  f"({len(png_bytes)} bytes) — ignoré")
         p_ph = doc.add_paragraph()
         p_ph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p_ph.paragraph_format.space_before = Pt(8)
@@ -876,21 +1161,18 @@ def build_chart_comment(doc, s: dict):
         r_ph.font.size = Pt(9)
         r_ph.font.color.rgb = _rgb("888888")
 
-    # ── Section commentaire
+    # ── Section commentaire ───────────────────────────────────────────────────
     _section_heading(doc, "COMMENTAIRE DE LA COURBE — ÉVOLUTION 100 JOURS")
 
-    ticker = _s(s, "ticker", "ce titre")
     cours = _fmt_amount(s.get("cours"))
     var_1j = _validate_var_1j(s.get("var_1j"))
     tendance = _s(s, "tendance_100j", "neutre")
     volatilite = _s(s, "volatilite", "modérée")
 
-    # Texte principal : utiliser l'analyse enricher si disponible
     analyse = _s(s, "analyse_cours_100j")
     if analyse and analyse not in ("", "—"):
         _narrative(doc, analyse)
 
-    # Interprétation systématique : phase + momentum + implication
     t = str(tendance).lower()
     if "haussier" in t or "hausse" in t:
         phase = "accumulation progressive"
@@ -1009,12 +1291,10 @@ def build_technical_analysis(doc, s: dict):
 
     doc.add_paragraph()
 
-    # ── Synthèse technique (texte enricher)
     synthese = _s(s, "synthese_tech") or _s(s, "analyse_tech")
     if synthese and synthese not in ("", "—"):
         _narrative(doc, synthese, italic=True)
 
-    # ── Évaluation convergence des signaux
     signals_raw = [_s(s, k) for k in ("mm", "boll", "macd", "rsi", "stoch")]
     pos = sum(1 for sg in signals_raw if any(
         w in str(sg).lower() for w in ("haussier", "positif", "achat", "élevé")))
@@ -1088,7 +1368,6 @@ def build_fundamental_analysis(doc, s: dict):
     confiance = _s(s, "confiance", "—")
     reco_src = _s(s, "reco_src", "—")
 
-    # ── Analyse principale
     analyse = _s(s, "analyse_fond_recente")
     if not analyse or analyse in ("", "—", "null", "None"):
         analyse = _s(s, "analyse_fond")
@@ -1103,10 +1382,8 @@ def build_fundamental_analysis(doc, s: dict):
                    f"Confiance analytique : {confiance}. "
                    "Les données fondamentales détaillées seront intégrées lors du prochain rapport complet.")
 
-    # ── Tableau des indicateurs fondamentaux extraits du rapport source
     _build_fundamentals_table(doc, s)
 
-    # ── Profil financier synthétique (ligne 1 colonne)
     _sub_heading(doc, "Profil financier")
     tbl = doc.add_table(rows=2, cols=4)
     tbl.style = "Table Grid"
@@ -1123,7 +1400,6 @@ def build_fundamental_analysis(doc, s: dict):
         _cw(tbl.rows[1].cells[i], v, size=8, bg=b)
     doc.add_paragraph()
 
-    # ── Risques
     risques = _sl(s, "risques")
     if risques:
         _key_bloc(doc,
@@ -1131,7 +1407,6 @@ def build_fundamental_analysis(doc, s: dict):
                   "  |  ".join(str(r) for r in risques[:3]),
                   "FFF0E6", "C0392B")
 
-    # ── Perspectives
     persp = _s(s, "perspectives")
     if persp and persp not in ("", "—"):
         _key_bloc(doc, "PERSPECTIVES :", persp, "E8F8F0", "155724")
@@ -1153,7 +1428,6 @@ def build_financial_analysis(doc, s: dict):
                f"Données financières de référence — {date_donnees}.",
                size=8, italic=True, color="666666")
 
-    # ── 1. Tableau ratios financiers (6 ratios + dates)
     _sub_heading(doc, "1.  Ratios financiers clés")
     ratios_rows = [
         ("PER (Price/Earnings)",  _fund_val(s, "per"),           _fund_val(s, "per_date")),
@@ -1175,7 +1449,6 @@ def build_financial_analysis(doc, s: dict):
         _cw(tbl_r.rows[i].cells[2], dt,  size=8, bg=bg_dt)
     doc.add_paragraph()
 
-    # ── 2. Évolution historique sur 2-3 ans (CA / RN / ROE)
     ca_n   = _fund_val(s, "ca")
     ca_n_1 = _fund_val(s, "ca_n_1")
     ca_n_2 = _fund_val(s, "ca_n_2")
@@ -1209,7 +1482,6 @@ def build_financial_analysis(doc, s: dict):
                    "Historique sur 2-3 ans non disponible dans le rapport source.",
                    size=8, italic=True, color="888888")
 
-    # ── 3. Forces / Faiblesses (3 max chacun)
     forces = _sl(s, "forces_financieres")[:3]
     faibles = _sl(s, "faiblesses_financieres")[:3]
 
@@ -1230,13 +1502,11 @@ def build_financial_analysis(doc, s: dict):
                    "Forces et faiblesses financières non identifiées dans le rapport source.",
                    size=8, italic=True, color="888888")
 
-    # ── 4. Conclusion financière (2-3 lignes)
     _sub_heading(doc, "4.  Conclusion financière")
     synth = _s(s, "synthese_financiere")
     if synth and synth not in ("", "—", "null", "None"):
         _key_bloc(doc, "BILAN FINANCIER :", synth, "E8F0FB", "1558A7")
     else:
-        # Fallback synthétique à partir des ratios disponibles
         parts = []
         if _fund_val(s, "per") != "N/D":
             parts.append(f"PER {_fund_val(s, 'per')}")
@@ -1276,10 +1546,7 @@ def _emoji_bg(emoji: str) -> str:
 
 
 def _ratio_emoji(val, good, vigilance, lower_better=False) -> str:
-    """Émoji selon la position de val par rapport aux seuils.
-    - lower_better=False (défaut) : >= good → 🟢, >= vigilance → 🟡, sinon 🔴.
-    - lower_better=True : <= good → 🟢, <= vigilance → 🟡, sinon 🔴.
-    Renvoie 🔵 si val n'est pas numériquement exploitable."""
+    """Émoji selon la position de val par rapport aux seuils."""
     f = _pct_to_float(val)
     if f is None:
         return "🔵"
@@ -1299,8 +1566,7 @@ def _ratio_emoji(val, good, vigilance, lower_better=False) -> str:
 def _build_financial_subtable(doc, s: dict, rows):
     """
     Tableau 4 colonnes (Indicateur · Valeur · Interprétation · Signal) pour
-    une sous-section financière. `rows` est une liste de tuples
-    (label, key, interpretation, emoji).
+    une sous-section financière.
     """
     tbl = doc.add_table(rows=1 + len(rows), cols=4)
     tbl.style = "Table Grid"
@@ -1310,7 +1576,6 @@ def _build_financial_subtable(doc, s: dict, rows):
     for i, (label, key, interp, emoji) in enumerate(rows, start=1):
         val = _fmt_amount(s.get(key))
         bg_val = "F5F5F5" if val == "—" else "FFFFFF"
-        # Si la valeur est absente, on neutralise l'émoji en 🔵 informatif
         em = emoji if val != "—" else "🔵"
         _cw(tbl.rows[i].cells[0], label, bold=True, size=8, bg="EBF0FA")
         _cw(tbl.rows[i].cells[1], val, size=8, bg=bg_val)
@@ -1325,9 +1590,6 @@ def build_financial_data_complete(doc, s: dict):
     Données financières structurées complètes (style fiche BOAC) :
     1. BILAN ACTIF  2. BILAN PASSIF  3. COMPTE DE RÉSULTAT
     4. RATIOS DE RENTABILITÉ  5. STRUCTURE & LIQUIDITÉ
-    Chaque indicateur : valeur (séparateur milliers) + interprétation + émoji
-    signal (🟢 positif / 🟡 vigilance / 🔴 négatif / 🔵 informatif).
-    Source et exercice indiqués en en-tête.
     """
     _section_heading(doc, "DONNÉES FINANCIÈRES STRUCTURÉES")
 
@@ -1340,7 +1602,6 @@ def build_financial_data_complete(doc, s: dict):
         size=8, italic=True, color="666666",
     )
 
-    # ── 1. BILAN ACTIF
     _sub_heading(doc, "1.  BILAN ACTIF")
     _build_financial_subtable(doc, s, [
         ("Caisse & Banque Centrale", "caisse_banque_centrale",
@@ -1361,7 +1622,6 @@ def build_financial_data_complete(doc, s: dict):
          "Taille de bilan globale.", "🔵"),
     ])
 
-    # ── 2. BILAN PASSIF
     _sub_heading(doc, "2.  BILAN PASSIF")
     _build_financial_subtable(doc, s, [
         ("Capital souscrit", "capital_souscrit",
@@ -1382,7 +1642,6 @@ def build_financial_data_complete(doc, s: dict):
          "Passif exigible total.", "🟡"),
     ])
 
-    # ── 3. COMPTE DE RÉSULTAT
     _sub_heading(doc, "3.  COMPTE DE RÉSULTAT")
     _build_financial_subtable(doc, s, [
         ("PNB (Produit Net Bancaire)", "pnb",
@@ -1407,7 +1666,6 @@ def build_financial_data_complete(doc, s: dict):
          "Bénéfice final attribuable aux actionnaires.", "🟢"),
     ])
 
-    # ── 4. RATIOS DE RENTABILITÉ
     _sub_heading(doc, "4.  RATIOS DE RENTABILITÉ")
     _build_financial_subtable(doc, s, [
         ("Marge opérationnelle", "marge_operationnelle",
@@ -1432,7 +1690,6 @@ def build_financial_data_complete(doc, s: dict):
          _ratio_emoji(s.get("roa"), good=1.5, vigilance=0.5)),
     ])
 
-    # ── 5. STRUCTURE & LIQUIDITÉ
     _sub_heading(doc, "5.  STRUCTURE & LIQUIDITÉ")
     _build_financial_subtable(doc, s, [
         ("Autonomie financière", "autonomie_financiere",
@@ -1481,7 +1738,6 @@ def build_conclusion(doc, s: dict):
     confiance = _s(s, "confiance", "Modérée")
     resume = _s(s, "resume_rapport", "—")
 
-    # ── Calcul horizon à partir du score
     if score_f >= 70:
         horizon = "Long terme (> 12 mois)"
         profil_inv = "Investissement core / portefeuille défensif"
@@ -1495,7 +1751,6 @@ def build_conclusion(doc, s: dict):
         horizon = "Très court terme ou abstention"
         profil_inv = "Profil spéculatif — risque élevé"
 
-    # ── 1. Matrice Risque × Horizon
     _sub_heading(doc, "1.  Matrice Risque × Horizon de placement")
 
     tbl = doc.add_table(rows=2, cols=5)
@@ -1512,7 +1767,6 @@ def build_conclusion(doc, s: dict):
 
     doc.add_paragraph()
 
-    # ── 2. Divergences
     _sub_heading(doc, "2.  Divergences identifiées")
 
     div_lower = str(divergence).lower()
@@ -1531,7 +1785,6 @@ def build_conclusion(doc, s: dict):
         r_nd.italic = True
         r_nd.font.color.rgb = _rgb("0F9D58")
 
-    # ── 3. Recommandation finale
     _sub_heading(doc, "3.  Recommandation d'investissement")
 
     action_map = {
@@ -1556,7 +1809,6 @@ def build_conclusion(doc, s: dict):
         ("SURVEILLER", "FFEB9C", "7D6608", "Maintenir la position. Aucune action urgente requise.")
     )
 
-    # Grand bloc action
     tbl2 = doc.add_table(rows=1, cols=1)
     cell2 = tbl2.rows[0].cells[0]
     _cell_bg(cell2, action_bg)
@@ -1572,16 +1824,13 @@ def build_conclusion(doc, s: dict):
     sp.paragraph_format.space_before = Pt(0)
     sp.paragraph_format.space_after = Pt(4)
 
-    # Texte d'accompagnement de la recommandation
     _narrative(doc, action_text)
 
-    # Synthèse finale
     _narrative(doc,
                f"{ticker} — Score {score_str}/100 ({score_label}). "
                f"Reco : {reco}. Confiance : {confiance}. "
                f"Risque : {risque} — Horizon : {horizon.lower()}.")
 
-    # Résumé compact final
     if resume and resume not in ("", "—"):
         _key_bloc(doc, "RÉSUMÉ :", resume, "E8F0FB", "1558A7")
 
@@ -1616,7 +1865,18 @@ def _pied(doc, date_str: str, freq: str = "JOUR", period_info: dict = None):
 
 # ── Assemblage de la fiche ────────────────────────────────────────────────────
 
-def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR", period_info: dict = None) -> bytes:
+def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
+                      period_info: dict = None,
+                      images_map: dict | None = None) -> bytes:
+    """
+    Assemble la fiche Word d'une société.
+
+    Paramètre supplémentaire
+    ------------------------
+    images_map : dict[ticker -> png_bytes] produit par _extract_images_from_docx().
+                 Si None ou si le ticker de cette société n'y figure pas, on bascule
+                 sur le graphique matplotlib de secours.
+    """
     doc = Document()
     section = doc.sections[0]
     section.page_width = Cm(21)
@@ -1632,19 +1892,23 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR", period_info: d
         p0.clear()
         _cp(p0, 0, 0)
 
+    # Récupérer le PNG source pour ce ticker (None si absent)
+    ticker = str(s.get("ticker") or "").strip().upper()
+    source_png = (images_map or {}).get(ticker)
+
     build_header(doc, s, date_str)           # En-tête : ticker, score, reco, indicateurs
     _add_separator(doc)
     build_market_table(doc, s)               # Métriques de marché
     _add_separator(doc)
-    build_chart_comment(doc, s)              # Graphique + commentaire courbe
+    build_chart_comment(doc, s, source_png)  # Graphique source Word ou matplotlib
     _add_separator(doc)
     build_technical_analysis(doc, s)         # Analyse technique (tableau + convergence)
     _add_separator(doc)
     build_fundamental_analysis(doc, s)       # Analyse fondamentale + risques + perspectives
     _add_separator(doc)
-    build_financial_analysis(doc, s)         # Analyse financière détaillée (ratios, évolution, forces/faiblesses)
+    build_financial_analysis(doc, s)         # Analyse financière détaillée
     _add_separator(doc)
-    build_financial_data_complete(doc, s)    # Données financières structurées (Bilan / Compte de résultat / Ratios)
+    build_financial_data_complete(doc, s)    # Données financières structurées
     _add_separator(doc)
     build_conclusion(doc, s)                 # Conclusion : matrice + divergences + action
     _pied(doc, date_str, freq, period_info)
@@ -1659,30 +1923,67 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR", period_info: d
 def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> list:
     """
     Génère une fiche Word par société depuis un ou plusieurs .docx source.
-    Pipeline : texte → extraction LLM (minimal) → enrichissement Python → Word.
+
+    Pipeline :
+      0. Extraction des images du document source (nouveau)
+      1. Extraction du texte
+      2. Extraction LLM (JSON minimal)
+      3. Enrichissement Python + génération Word
+
     docs_bytes : bytes (un seul doc) ou list[bytes] (plusieurs docs, plus récent en premier).
     Retourne list de (filename: str, docx_bytes: bytes).
     """
     if isinstance(docs_bytes, bytes):
         docs_bytes = [docs_bytes]
 
-    date_str = date.today().strftime("%d/%m/%Y")
+    date_str  = date.today().strftime("%d/%m/%Y")
     date_file = date.today().strftime("%Y%m%d")
     freq_suffix = {"JOUR": "JOUR", "HEBDO": "HEBDO", "MENSUEL": "MENSUEL",
                    "TRIM": "TRIM", "ANNUEL": "ANNUEL"}.get(freq, freq)
 
+    # ── Étape 0 : extraction des images depuis le document le plus récent ─────
+    # On extrait depuis le premier document (le plus récent) qui est celui
+    # dont les graphiques correspondent aux données du jour.
+    print(f"  [Fiches/{freq}] Étape 0/3 : Extraction des images du document source...")
+    images_map: dict = {}
+    try:
+        images_map = _extract_images_from_docx(docs_bytes[0])
+        print(f"  [Fiches/{freq}] {len(images_map)} graphique(s) extrait(s) : "
+              f"{list(images_map.keys()) or '(aucun)'}")
+    except Exception as exc:
+        print(f"  [Fiches/{freq}] AVERTISSEMENT extraction images : {exc} — "
+              "les graphiques seront reconstruits par matplotlib.")
+
+    # ── Étape 1 : extraction du texte ─────────────────────────────────────────
     print(f"  [Fiches/{freq}] Étape 1/3 : Extraction du texte ({len(docs_bytes)} doc(s))...")
     full_text = _build_context(docs_bytes, freq)
     print(f"  [Fiches/{freq}] Texte source : {len(full_text)} chars")
 
+    # ── Étape 2 : extraction LLM ──────────────────────────────────────────────
     print(f"  [Fiches/{freq}] Étape 2/3 : Extraction LLM (JSON minimal)...")
     raw_companies = extract_all(full_text, freq, period_info)
     print(f"  [Fiches/{freq}] LLM → {len(raw_companies)} société(s) extraite(s).")
 
     if not raw_companies:
-        print(f"  [Fiches/{freq}] ERREUR : extraction invalide ou aucune société — abandon (voir logs Extractor).")
+        print(f"  [Fiches/{freq}] ERREUR : extraction invalide ou aucune société — "
+              "abandon (voir logs Extractor).")
         return []
 
+    # Affiner le mapping images maintenant qu'on connaît les tickers LLM
+    # (relancer l'extraction avec la liste des tickers connus si le premier
+    #  passage n'a rien trouvé — améliore le filtre)
+    if not images_map:
+        known = [str(c.get("ticker") or "").strip().upper() for c in raw_companies if c.get("ticker")]
+        if known:
+            print(f"  [Fiches/{freq}] Nouvelle tentative extraction images avec tickers connus : {known}")
+            try:
+                images_map = _extract_images_from_docx(docs_bytes[0], known_tickers=known)
+                print(f"  [Fiches/{freq}] {len(images_map)} graphique(s) après relance : "
+                      f"{list(images_map.keys()) or '(aucun)'}")
+            except Exception as exc:
+                print(f"  [Fiches/{freq}] AVERTISSEMENT relance images : {exc}")
+
+    # ── Étape 3 : enrichissement + génération Word ────────────────────────────
     print(f"  [Fiches/{freq}] Étape 3/3 : Enrichissement Python + génération Word...")
     all_companies = enrich(raw_companies)
     print(f"  [Fiches/{freq}] Enrichissement → {len(all_companies)} société(s).")
@@ -1693,11 +1994,16 @@ def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> list:
         if not ticker:
             print(f"  [Fiches/{freq}] SKIP : société sans ticker")
             continue
+        has_source_img = ticker.upper() in images_map
         try:
-            docx_bytes = _build_fiche_docx(company, date_str, freq, period_info)
+            docx_bytes = _build_fiche_docx(
+                company, date_str, freq, period_info,
+                images_map=images_map,
+            )
             filename = f"Fiche_{ticker}_{date_file}_{freq_suffix}.docx"
             results.append((filename, docx_bytes))
-            print(f"  [Fiches/{freq}] ✓ {filename}")
+            img_status = "✓ graphique source Word" if has_source_img else "~ graphique matplotlib"
+            print(f"  [Fiches/{freq}] ✓ {filename}  [{img_status}]")
         except Exception as e:
             print(f"  [Fiches/{freq}] AVERTISSEMENT : fiche {ticker} ignorée — {e}")
 
