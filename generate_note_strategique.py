@@ -1201,21 +1201,35 @@ def _section_macro(doc, source_buckets, source_doc):
         _para(doc, txt)
         break
 
-    # 3 sous-thèmes condensés
+    # 3 sous-thèmes condensés avec impact BRVM et sociétés concernées
     themes = [
         ("macro_actu", "Actualités macro-économiques"),
         ("macro_pol",  "Actualités politiques & géopolitiques"),
         ("macro_fin",  "Actualités financières & marchés"),
     ]
-    for key, label in themes:
-        sub_blocks = source_buckets.get(key, [])
-        if not sub_blocks:
-            continue
-        _heading(doc, label, 2)
-        # Stratégie : récupérer les paragraphes après chaque H2 (régions),
-        # mais condenser à 2 entrées max (Mondial + UEMOA / BRVM si dispo).
-        regions_kept = []
+
+    # Palette de couleurs pour les niveaux d'impact
+    _IMPACT_BG = {"Positif": "C6EFCE", "Négatif": "FFC7CE", "Neutre": "FFEB9C"}
+    _IMPACT_FG = {"Positif": "0F9D58", "Négatif": "D93025", "Neutre": "7D6608"}
+
+    def _extract_brvm_impact_block(sub_blocks):
+        """
+        Parcourt les blocs du sous-thème et extrait pour chaque région :
+          - le texte de l'actualité
+          - l'impact BRVM (ligne commençant par ⚡)
+          - les sociétés concernées (ligne contenant 'Sociétés concernées')
+        Retourne list[ (region, actu_txt, impact_txt, societes_txt) ]
+        """
+        entries = []
         current_region = None
+        actu_txt = ""
+        impact_txt = ""
+        societes_txt = ""
+
+        def _flush():
+            if current_region and actu_txt:
+                entries.append((current_region, actu_txt, impact_txt, societes_txt))
+
         for kind, el in sub_blocks:
             if kind != "p":
                 continue
@@ -1223,25 +1237,108 @@ def _section_macro(doc, source_buckets, source_doc):
             txt = _para_text(el).strip()
             if not txt:
                 continue
-            if st == "Heading2":
+            if st in ("Heading2", "Titre2"):
+                _flush()
                 current_region = txt
+                actu_txt = impact_txt = societes_txt = ""
                 continue
-            if st == "Heading3":
-                continue  # "⚡ Impact estimé sur la BRVM" → on prend le para suivant
+            if st in ("Heading3", "Titre3"):
+                continue
             if _MACRO_DROP_RX.search(txt):
                 continue
-            if current_region and len(regions_kept) < 4:
-                regions_kept.append((current_region, txt))
-                current_region = None
-        # Affiche : 1 paragraphe condensé par région retenue
-        for region, txt in regions_kept[:4]:
-            label = re.sub(r"^[^\w]+", "", region)  # strip emoji
-            label = re.sub(r"^Plan\s+", "", label)   # strip "Plan "
+            # Ligne d'impact BRVM
+            if txt.startswith("⚡") or "Impact" in txt[:30]:
+                impact_txt = txt[:200]
+                continue
+            # Ligne sociétés concernées
+            if "Sociétés concernées" in txt or "sociétés concernées" in txt:
+                societes_txt = txt[:300]
+                continue
+            # Texte d'actualité principal (premier non-vide après la région)
+            if not actu_txt:
+                actu_txt = txt
+
+        _flush()
+        return entries
+
+    for key, theme_label in themes:
+        sub_blocks = source_buckets.get(key, [])
+        if not sub_blocks:
+            continue
+        _heading(doc, theme_label, 2)
+
+        entries = _extract_brvm_impact_block(sub_blocks)
+        shown = 0
+        for region, actu_txt, impact_txt, societes_txt in entries[:4]:
+            region_clean = re.sub(r"^[^\w]+", "", region)
+            region_clean = re.sub(r"^Plan\s+", "", region_clean)
+
+            # Ligne principale : région + actualité
             p = doc.add_paragraph()
-            p.paragraph_format.space_after = Pt(3)
+            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_after = Pt(1)
             p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            _bold(p, f"{label} — ", 10, "1558A7")
-            _normal(p, txt[:380] + ("…" if len(txt) > 380 else ""), 10)
+            _bold(p, f"{region_clean} — ", 10, "1558A7")
+            _normal(p, actu_txt[:350] + ("…" if len(actu_txt) > 350 else ""), 10)
+
+            # Bloc impact BRVM coloré
+            if impact_txt:
+                # Détecter le niveau d'impact
+                impact_level = "Neutre"
+                il = impact_txt.lower()
+                if any(w in il for w in ("positif", "favorable", "hausse", "soutien")):
+                    impact_level = "Positif"
+                elif any(w in il for w in ("négatif", "negatif", "baisse", "pression", "risque")):
+                    impact_level = "Négatif"
+                bg = _IMPACT_BG.get(impact_level, "F5F5F5")
+                fg = _IMPACT_FG.get(impact_level, "333333")
+
+                tbl_imp = doc.add_table(rows=1, cols=1)
+                tbl_imp.style = "Table Grid"
+                cell = tbl_imp.rows[0].cells[0]
+                _cell_bg(cell, bg)
+                # Marges internes
+                tcPr = cell._tc.get_or_add_tcPr()
+                tcMar = OxmlElement("w:tcMar")
+                for side in ("top","bottom","left","right"):
+                    el_m = OxmlElement(f"w:{side}")
+                    el_m.set(qn("w:w"), "80")
+                    el_m.set(qn("w:type"), "dxa")
+                    tcMar.append(el_m)
+                tcPr.append(tcMar)
+                p_imp = cell.paragraphs[0]
+                p_imp.paragraph_format.space_before = Pt(0)
+                p_imp.paragraph_format.space_after = Pt(0)
+                r_imp = p_imp.add_run(f"⚡ Impact BRVM : {impact_level}  —  ")
+                r_imp.bold = True
+                r_imp.font.size = Pt(9)
+                r_imp.font.color.rgb = _rgb(fg)
+                # Nettoyer le texte impact (enlever le préfixe déjà affiché)
+                clean_imp = re.sub(r"^⚡\s*Impact\s*(sur la BRVM|estimé)?\s*:?\s*", "", impact_txt, flags=re.IGNORECASE).strip()
+                r2 = p_imp.add_run(clean_imp[:200])
+                r2.font.size = Pt(9)
+                r2.font.color.rgb = _rgb("333333")
+
+                sp = doc.add_paragraph()
+                sp.paragraph_format.space_before = Pt(0)
+                sp.paragraph_format.space_after = Pt(1)
+
+            # Sociétés concernées
+            if societes_txt:
+                p_soc = doc.add_paragraph()
+                p_soc.paragraph_format.space_before = Pt(1)
+                p_soc.paragraph_format.space_after = Pt(4)
+                clean_soc = re.sub(r"^Sociétés concernées\s*:?\s*", "", societes_txt, flags=re.IGNORECASE).strip()
+                r_label = p_soc.add_run("Sociétés concernées : ")
+                r_label.bold = True
+                r_label.font.size = Pt(8.5)
+                r_label.font.color.rgb = _rgb("1558A7")
+                r_soc = p_soc.add_run(clean_soc[:250])
+                r_soc.font.size = Pt(8.5)
+                r_soc.font.color.rgb = _rgb("444444")
+                r_soc.italic = True
+
+            shown += 1
 
     # SYNTHÈSE & RECOMMANDATION FINALE — tout le texte, on saute les tableaux
     synth_blocks = source_buckets.get("macro_synth", [])
@@ -1751,6 +1848,93 @@ def _aggregate_predictions_by_horizon(tables):
     return out
 
 
+def _dedup_cell(s: str) -> str:
+    """Déduplique une cellule triplée 'XYZXYZXYZ' → 'XYZ'."""
+    n = len(s)
+    for div in (3, 2):
+        if n % div == 0:
+            part = s[: n // div]
+            if s == part * div:
+                return part
+    return s
+
+
+def _parse_brvm_price(raw: str):
+    """Parse un prix BRVM depuis une cellule triplée. Virgule = sep. milliers FR."""
+    s = _dedup_cell(raw).strip().replace(" ", "").replace("\u00a0", "").replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _scan_j10_per_ticker(source_doc) -> list:
+    """Extrait les prédictions J+10 de chaque société cotée."""
+    body = source_doc.element.body
+    elements = list(body.iterchildren())
+    rx_ticker = re.compile(r"^\s*\d+\.\s*([A-Z]{2,6})\s*[-\u2014]")
+    rx_var = re.compile(r"([+\-]?\d+(?:[.,]\d+)?)\s*%")
+    current_ticker = None
+    results = []
+    seen_tickers = set()
+
+    for i, child in enumerate(elements):
+        tag = child.tag.split("}")[-1]
+        if tag == "p":
+            style = _para_style(child)
+            raw = _para_text(child).strip()
+            txt = _dedup_cell(raw)
+            if style in ("Titre2", "Heading2"):
+                m = rx_ticker.match(txt)
+                if m:
+                    current_ticker = m.group(1)
+        elif tag == "tbl" and current_ticker:
+            data = _read_source_tbl_data(child)
+            if not data or not data[0]:
+                continue
+            header = " ".join(_dedup_cell(c) for c in data[0])
+            if "Prix" not in header:
+                continue
+            first_col = " ".join(_dedup_cell(r[0]) for r in data[1:] if r)
+            if "J+" not in first_col:
+                continue
+            j10_row = None
+            for row in data[1:]:
+                if not row:
+                    continue
+                horizon = _dedup_cell(row[0]).strip()
+                if horizon.startswith("J+10") and j10_row is None:
+                    j10_row = row
+            if j10_row is None or len(j10_row) < 5:
+                continue
+            try:
+                prix_j10  = _parse_brvm_price(j10_row[3])
+                borne_bas = _parse_brvm_price(j10_row[2])
+                borne_haut = _parse_brvm_price(j10_row[4])
+                var_raw = _dedup_cell(j10_row[5] if len(j10_row) > 5 else j10_row[-1])
+                m_var = rx_var.search(var_raw)
+                var_j10 = float(m_var.group(1).replace(",", ".")) if m_var else None
+                if prix_j10 is None or var_j10 is None:
+                    continue
+                cours_actuel = round(prix_j10 / (1 + var_j10 / 100)) if var_j10 != -100 else None
+                if current_ticker not in seen_tickers:
+                    seen_tickers.add(current_ticker)
+                    results.append({
+                        "ticker": current_ticker, "cours_actuel": cours_actuel,
+                        "prix_j10": prix_j10, "var_j10": var_j10,
+                        "borne_bas": borne_bas, "borne_haut": borne_haut,
+                    })
+            except (ValueError, ZeroDivisionError, IndexError):
+                pass
+    return results
+
+
+def _fmt_prix(v) -> str:
+    if v is None:
+        return "—"
+    return f"{v:,.0f}".replace(",", " ")
+
+
 def _section_predictions_ia(doc, source_doc, source_buckets):
     """Section 10 — Synthèse récapitulative des prédictions IA (J+1 → J+10)."""
     _heading(doc, "SYNTHÈSE RÉCAPITULATIVE DES PRÉDICTIONS IA (J+1 → J+10)")
@@ -1766,11 +1950,15 @@ def _section_predictions_ia(doc, source_doc, source_buckets):
     pred_tables_data = _scan_prediction_tables(source_doc)
     print(f"  [Note/predictions] {len(pred_tables_data)} tableaux J+1→J+10 détectés dans le corps")
 
+    j10_data = _scan_j10_per_ticker(source_doc)
+    print(f"  [Note/predictions] {len(j10_data)} prédictions J+10 extraites par ticker")
+
     horizon_data = _aggregate_predictions_by_horizon(pred_tables_data)
     if not any(h[0] != "—" for h in horizon_data.values()) and not blocks:
         _para(doc, "Section prédictions IA non identifiée dans le rapport source.")
         return
 
+    # Intro
     intro = ""
     for kind, el in blocks:
         if kind == "p" and not _para_style(el).startswith("Heading"):
@@ -1787,10 +1975,11 @@ def _section_predictions_ia(doc, source_doc, source_buckets):
     if intro:
         _para(doc, intro[:600] + ("…" if len(intro) > 600 else ""))
 
+    # ── Tableau synthèse par horizon
     _heading(doc, "Tableau de synthèse par horizon", 2)
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = "Table Grid"
-    _tbl_header(tbl, ["Horizon", "Tendance prévue", "Niveau cible", "Confiance"], "673AB7", "FFFFFF")
+    _tbl_header(tbl, ["Horizon", "Tendance prévue", "Variation moyenne", "Confiance"], "673AB7", "FFFFFF")
     for h in _HORIZONS_IA:
         tendance, niveau, confiance = horizon_data[h]
         tr = tbl.add_row()
@@ -1816,6 +2005,80 @@ def _section_predictions_ia(doc, source_doc, source_buckets):
         _heading(doc, "Détails des prédictions par horizon (source)", 2)
         _copy_source_table(doc, bucket_tables[0], header_bg="673AB7", header_fg="FFFFFF", max_rows=10)
 
+    if j10_data:
+        hausse_top5 = sorted(j10_data, key=lambda x: x["var_j10"], reverse=True)[:5]
+        baisse_top5 = sorted(j10_data, key=lambda x: x["var_j10"])[:5]
+
+        # ── TOP 5 HAUSSE
+        _heading(doc, "TOP 5 — Cours attendus en HAUSSE à J+10", 2)
+        tbl_h = doc.add_table(rows=1, cols=5)
+        tbl_h.style = "Table Grid"
+        _tbl_header(tbl_h,
+                    ["Société", "Cours actuel (FCFA)", "Prix prédit J+10", "Var. %", "Borne haute"],
+                    "0F9D58", "FFFFFF")
+        for item in hausse_top5:
+            tr = tbl_h.add_row()
+            tr.cells[0].text = item["ticker"]
+            tr.cells[1].text = _fmt_prix(item["cours_actuel"])
+            tr.cells[2].text = _fmt_prix(item["prix_j10"])
+            tr.cells[3].text = f"{item['var_j10']:+.1f}%"
+            tr.cells[4].text = _fmt_prix(item["borne_haut"])
+            _cell_bg(tr.cells[3], "C6EFCE")
+            for cell in tr.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        r.font.size = Pt(9)
+        doc.add_paragraph()
+
+        # ── TOP 5 BAISSE
+        _heading(doc, "TOP 5 — Cours attendus en BAISSE à J+10", 2)
+        tbl_b = doc.add_table(rows=1, cols=5)
+        tbl_b.style = "Table Grid"
+        _tbl_header(tbl_b,
+                    ["Société", "Cours actuel (FCFA)", "Prix prédit J+10", "Var. %", "Borne basse"],
+                    "D93025", "FFFFFF")
+        for item in baisse_top5:
+            tr = tbl_b.add_row()
+            tr.cells[0].text = item["ticker"]
+            tr.cells[1].text = _fmt_prix(item["cours_actuel"])
+            tr.cells[2].text = _fmt_prix(item["prix_j10"])
+            tr.cells[3].text = f"{item['var_j10']:+.1f}%"
+            tr.cells[4].text = _fmt_prix(item["borne_bas"])
+            _cell_bg(tr.cells[3], "FFC7CE")
+            for cell in tr.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        r.font.size = Pt(9)
+        doc.add_paragraph()
+
+        # ── Tableau complet TOUTES sociétés
+        _heading(doc, "Tableau complet — Prédictions J+10 de toutes les sociétés", 2)
+        tbl_all = doc.add_table(rows=1, cols=6)
+        tbl_all.style = "Table Grid"
+        _tbl_header(tbl_all,
+                    ["#", "Société", "Cours actuel", "Prix prédit J+10", "Var. %", "Intervalle [bas – haut]"],
+                    "283593", "FFFFFF")
+        all_sorted = sorted(j10_data, key=lambda x: x["var_j10"], reverse=True)
+        for rank, item in enumerate(all_sorted, 1):
+            tr = tbl_all.add_row()
+            tr.cells[0].text = str(rank)
+            tr.cells[1].text = item["ticker"]
+            tr.cells[2].text = _fmt_prix(item["cours_actuel"])
+            tr.cells[3].text = _fmt_prix(item["prix_j10"])
+            var = item["var_j10"]
+            tr.cells[4].text = f"{var:+.1f}%"
+            tr.cells[5].text = f"{_fmt_prix(item['borne_bas'])} – {_fmt_prix(item['borne_haut'])}"
+            _cell_bg(tr.cells[4], "C6EFCE" if var > 0 else ("FFC7CE" if var < 0 else "FFEB9C"))
+            row_bg = "F5F8FF" if rank % 2 == 0 else "FFFFFF"
+            for ci in (0, 1, 2, 3, 5):
+                _cell_bg(tr.cells[ci], row_bg)
+            for cell in tr.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        r.font.size = Pt(8.5)
+        doc.add_paragraph()
+
+    # Conclusion
     n_haut = sum(1 for h in _HORIZONS_IA if "hauss" in horizon_data[h][0].lower())
     n_bas  = sum(1 for h in _HORIZONS_IA if "baiss" in horizon_data[h][0].lower())
     if n_haut > n_bas:
@@ -2012,33 +2275,109 @@ def _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets):
                     run.font.size = Pt(8.5)
     doc.add_paragraph()
 
+    # ── Tableau comparatif complet — tous les secteurs d'activité ────────────
+    _heading(doc, "Tableau comparatif des indicateurs clés — tous les secteurs d'activité", 2)
+    _para(doc,
+          "Ce tableau présente les ratios moyens par secteur calculés sur l'ensemble des "
+          "sociétés disposant de données publiées. Les moyennes sont pondérées par le nombre "
+          "de valeurs disponibles (indiqué entre parenthèses).", 9)
+
+    # Construire le tableau complet : 1 ligne par secteur, colonnes enrichies
+    # En-têtes : Secteur | Nb sociétés | PER moy. | ROE moy. | Marge nette moy. | Croissance CA moy. | Signal
+    def _signal_secteur(r: dict) -> tuple[str, str]:
+        """Retourne (signal_txt, bg_color) selon les ratios du secteur."""
+        roe_s = r.get("ROE", "—")
+        marge_s = r.get("Marge nette", "—")
+        try:
+            roe_v = float(str(roe_s).split("(")[0].replace("%","").replace(",",".").strip())
+            marge_v = float(str(marge_s).split("(")[0].replace("%","").replace(",",".").strip())
+            if roe_v >= 12 and marge_v >= 8:
+                return "✅ Solide", "C6EFCE"
+            if roe_v >= 6 or marge_v >= 4:
+                return "🟡 Correct", "FFEB9C"
+            return "⚠️ Faible", "FFC7CE"
+        except (ValueError, AttributeError):
+            return "—", "F5F5F5"
+
+    # Compter les tickers par secteur
+    sector_ticker_counts = {s: len(t) for s, t in _build_sector_ticker_map(source_buckets).items()}
+
+    tbl_comp = doc.add_table(rows=1, cols=7)
+    tbl_comp.style = "Table Grid"
+    _tbl_header(tbl_comp,
+                ["Secteur", "Nb val.", "PER moy.", "ROE moy.", "Marge nette", "Croissance CA", "Signal"],
+                "1A237E", "FFFFFF")
+
+    # Trier par ROE décroissant
+    def _sort_key(kv):
+        r = kv[1]
+        try:
+            return float(str(r.get("ROE","0")).split("(")[0].replace("%","").replace(",",".").strip())
+        except (ValueError, AttributeError):
+            return -999.0
+
+    for name, r in sorted(sector_ratios.items(), key=_sort_key, reverse=True):
+        signal_txt, signal_bg = _signal_secteur(r)
+        nb = sector_ticker_counts.get(name, "—")
+        tr = tbl_comp.add_row()
+        tr.cells[0].text = name[:35]
+        tr.cells[1].text = str(nb)
+        tr.cells[2].text = r.get("PER", "—")
+        tr.cells[3].text = r.get("ROE", "—")
+        tr.cells[4].text = r.get("Marge nette", "—")
+        tr.cells[5].text = r.get("Croissance CA", "—")
+        tr.cells[6].text = signal_txt
+        _cell_bg(tr.cells[6], signal_bg)
+        _cell_bg(tr.cells[0], "EBF0FA")
+        for cell in tr.cells:
+            for p in cell.paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(8.5)
+    doc.add_paragraph()
+
+    # ── Tableau complet — toutes les sociétés avec leurs ratios ──────────────
     if company_ratios:
-        _heading(doc, "Top sociétés — ratios publiés (extrait)", 2)
-        tbl2 = doc.add_table(rows=1, cols=5)
+        _heading(doc, "Tableau comparatif des indicateurs clés — toutes les sociétés", 2)
+        _para(doc,
+              "Ratios individuels publiés dans le rapport source pour chaque société cotée "
+              "(valeurs extraites des sections 'Analyse financière' et 'Données financières').", 9)
+
+        tbl2 = doc.add_table(rows=1, cols=6)
         tbl2.style = "Table Grid"
-        _tbl_header(tbl2, ["Société", "PER", "ROE", "Marge nette", "Croissance CA"], "283593", "FFFFFF")
+        _tbl_header(tbl2,
+                    ["Société", "Secteur", "PER", "ROE", "Marge nette", "Croissance CA"],
+                    "283593", "FFFFFF")
+
+        # Construire dict ticker → secteur depuis sector_map
+        ticker_to_sector = {}
+        for sect, tickers in _build_sector_ticker_map(source_buckets).items():
+            for t in tickers:
+                ticker_to_sector[t] = sect
+
         seen = set()
-        shown = 0
+        rank = 0
         for ticker, ratios in company_ratios:
             if ticker in seen:
                 continue
             seen.add(ticker)
             filled = sum(1 for v in ratios.values() if v)
-            if filled < 2:
+            if filled < 1:
                 continue
+            rank += 1
             tr = tbl2.add_row()
             tr.cells[0].text = ticker
-            tr.cells[1].text = ratios.get("PER", "—")
-            tr.cells[2].text = ratios.get("ROE", "—")
-            tr.cells[3].text = ratios.get("Marge nette", "—")
-            tr.cells[4].text = ratios.get("Croissance CA", "—")
-            for cell in tr.cells:
+            tr.cells[1].text = ticker_to_sector.get(ticker, "—")[:25]
+            tr.cells[2].text = ratios.get("PER", "—")
+            tr.cells[3].text = ratios.get("ROE", "—")
+            tr.cells[4].text = ratios.get("Marge nette", "—")
+            tr.cells[5].text = ratios.get("Croissance CA", "—")
+            # Fond alterné
+            row_bg = "F5F8FF" if rank % 2 == 0 else "FFFFFF"
+            for ci, cell in enumerate(tr.cells):
+                _cell_bg(cell, "EBF0FA" if ci == 0 else row_bg)
                 for p in cell.paragraphs:
                     for run in p.runs:
                         run.font.size = Pt(8.5)
-            shown += 1
-            if shown >= 15:
-                break
         doc.add_paragraph()
 
     n_sectors_with_data = sum(1 for v in sector_ratios.values() if any(x != "—" for x in v.values()))
