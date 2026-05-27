@@ -1182,18 +1182,21 @@ _MACRO_DROP_RX = re.compile(
 def _section_macro(doc, source_buckets, source_doc):
     """Section 5 — Analyse macro (pages 14-22 source).
 
-    Recopie l'introduction puis condense les 3 sous-thèmes (économique, politique,
-    financier) en gardant pour chacun le 'Plan Mondial' et son impact BRVM.
-    Termine par la SYNTHÈSE & RECOMMANDATION FINALE (sans les 15 tableaux de sources).
+    Lit directement le document source pour extraire, pour chaque plan
+    (Mondial, Africain, Afrique de l'Ouest, UEMOA, BRVM) et chaque
+    sous-thème (macro-économique, politique, financier) :
+      - les actualités (style Listepuces)
+      - le texte complet de l'impact BRVM (paragraphe après Titre3 '⚡')
+    Structure source : Titre2 → Listepuces* → Titre3 → para(impact BRVM)
     """
     _heading(doc, "ANALYSE MACRO — CONTEXTE INTERNATIONAL, AFRICAIN & UEMOA")
 
-    # Intro provient de l'ANALYSE MACRO (texte d'intro avant les sous-sections)
+    # Intro
     intro_blocks = source_buckets.get("macro", [])
     for kind, el in intro_blocks:
         if kind != "p":
             continue
-        if _para_style(el).startswith("Heading"):
+        if _para_style(el).startswith(("Heading", "Titre")):
             continue
         txt = _para_text(el).strip()
         if not txt or _MACRO_DROP_RX.search(txt):
@@ -1201,146 +1204,178 @@ def _section_macro(doc, source_buckets, source_doc):
         _para(doc, txt)
         break
 
-    # 3 sous-thèmes condensés avec impact BRVM et sociétés concernées
+    # ── Couleurs impact ───────────────────────────────────────────────────────
+    _IMPACT_BG = {"Positif": "C6EFCE", "Négatif": "FFC7CE", "Neutre": "FFEB9C"}
+    _IMPACT_FG = {"Positif": "0F9D58", "Négatif": "D93025", "Neutre": "7D6608"}
+
+    def _impact_level(txt: str) -> str:
+        t = txt.lower()
+        if any(w in t for w in ("positif", "favorable", "hausse", "soutien",
+                                 "opportunit", "bénéfique")):
+            return "Positif"
+        if any(w in t for w in ("négatif", "negatif", "baisse", "pression",
+                                 "risque", "fragilise", "pénalise", "incertitude",
+                                 "ralentissement", "sorties de capitaux")):
+            return "Négatif"
+        return "Neutre"
+
+    def _render_impact_block(doc, impact_txt: str):
+        """Affiche le bloc ⚡ Impact BRVM coloré avec le texte complet."""
+        if not impact_txt:
+            return
+        level = _impact_level(impact_txt)
+        bg = _IMPACT_BG[level]
+        fg = _IMPACT_FG[level]
+
+        tbl = doc.add_table(rows=1, cols=1)
+        tbl.style = "Table Grid"
+        cell = tbl.rows[0].cells[0]
+        _cell_bg(cell, bg)
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcMar = OxmlElement("w:tcMar")
+        for side in ("top", "bottom", "left", "right"):
+            e = OxmlElement(f"w:{side}")
+            e.set(qn("w:w"), "100")
+            e.set(qn("w:type"), "dxa")
+            tcMar.append(e)
+        tcPr.append(tcMar)
+
+        p = cell.paragraphs[0]
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
+
+        # Label
+        r1 = p.add_run(f"⚡ Impact BRVM — {level} : ")
+        r1.bold = True
+        r1.font.size = Pt(9)
+        r1.font.color.rgb = _rgb(fg)
+
+        # Texte complet de l'impact (nettoyé du préfixe éventuel)
+        clean = re.sub(
+            r"^⚡\s*Impact\s*(estimé\s*)?sur\s*la\s*BRVM\s*:?\s*",
+            "", impact_txt, flags=re.IGNORECASE
+        ).strip()
+        r2 = p.add_run(clean)
+        r2.font.size = Pt(9)
+        r2.font.color.rgb = _rgb("222222")
+
+        sp = doc.add_paragraph()
+        sp.paragraph_format.space_before = Pt(0)
+        sp.paragraph_format.space_after = Pt(3)
+
+    def _scan_theme_bucket(bucket_key: str, theme_label: str):
+        """
+        Lit les blocs du bucket et reconstruit, pour chaque Titre2 (plan),
+        la liste des actualités et le texte d'impact BRVM.
+        Renvoie list[ (plan_name, actualites_list, impact_txt) ].
+        """
+        sub_blocks = source_buckets.get(bucket_key, [])
+        if not sub_blocks:
+            return []
+
+        plans = []
+        current_plan = None
+        actus = []
+        impact = ""
+        next_is_impact = False   # True quand on vient de passer un Titre3 ⚡
+
+        def _flush():
+            if current_plan is not None:
+                plans.append((current_plan, list(actus), impact))
+
+        for kind, el in sub_blocks:
+            if kind != "p":
+                continue
+            style = _para_style(el)
+            raw = _para_text(el).strip()
+            txt = _dedup_para(raw)
+            if not txt:
+                continue
+
+            if style in ("Titre2", "Heading2"):
+                _flush()
+                # Nettoyer le nom du plan (enlever emoji + "Plan ")
+                plan_clean = re.sub(r"^[^\w]+", "", txt)
+                plan_clean = re.sub(r"^Plan\s+", "", plan_clean)
+                current_plan = plan_clean
+                actus = []
+                impact = ""
+                next_is_impact = False
+
+            elif style in ("Titre3", "Heading3"):
+                # C'est le titre "⚡ Impact estimé sur la BRVM"
+                # Le paragraphe SUIVANT contient le texte de l'impact
+                next_is_impact = True
+
+            elif next_is_impact:
+                # Premier paragraphe après le Titre3 = texte d'impact BRVM
+                if not _MACRO_DROP_RX.search(txt):
+                    impact = txt
+                next_is_impact = False
+
+            elif style in ("Listepuces", "ListParagraph", ""):
+                if not _MACRO_DROP_RX.search(txt) and current_plan is not None:
+                    # Nettoyer les ** du markdown
+                    clean = re.sub(r"\*\*([^*]+)\*\*", r"\1", txt)
+                    actus.append(clean)
+
+        _flush()
+        return plans
+
+    def _dedup_para(s: str) -> str:
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0:
+                p = s[:n // d]
+                if s == p * d:
+                    return p
+        return s
+
+    # ── 3 sous-thèmes ─────────────────────────────────────────────────────────
     themes = [
         ("macro_actu", "Actualités macro-économiques"),
         ("macro_pol",  "Actualités politiques & géopolitiques"),
         ("macro_fin",  "Actualités financières & marchés"),
     ]
 
-    # Palette de couleurs pour les niveaux d'impact
-    _IMPACT_BG = {"Positif": "C6EFCE", "Négatif": "FFC7CE", "Neutre": "FFEB9C"}
-    _IMPACT_FG = {"Positif": "0F9D58", "Négatif": "D93025", "Neutre": "7D6608"}
-
-    def _extract_brvm_impact_block(sub_blocks):
-        """
-        Parcourt les blocs du sous-thème et extrait pour chaque région :
-          - le texte de l'actualité
-          - l'impact BRVM (ligne commençant par ⚡)
-          - les sociétés concernées (ligne contenant 'Sociétés concernées')
-        Retourne list[ (region, actu_txt, impact_txt, societes_txt) ]
-        """
-        entries = []
-        current_region = None
-        actu_txt = ""
-        impact_txt = ""
-        societes_txt = ""
-
-        def _flush():
-            if current_region and actu_txt:
-                entries.append((current_region, actu_txt, impact_txt, societes_txt))
-
-        for kind, el in sub_blocks:
-            if kind != "p":
-                continue
-            st = _para_style(el)
-            txt = _para_text(el).strip()
-            if not txt:
-                continue
-            if st in ("Heading2", "Titre2"):
-                _flush()
-                current_region = txt
-                actu_txt = impact_txt = societes_txt = ""
-                continue
-            if st in ("Heading3", "Titre3"):
-                continue
-            if _MACRO_DROP_RX.search(txt):
-                continue
-            # Ligne d'impact BRVM
-            if txt.startswith("⚡") or "Impact" in txt[:30]:
-                impact_txt = txt[:200]
-                continue
-            # Ligne sociétés concernées
-            if "Sociétés concernées" in txt or "sociétés concernées" in txt:
-                societes_txt = txt[:300]
-                continue
-            # Texte d'actualité principal (premier non-vide après la région)
-            if not actu_txt:
-                actu_txt = txt
-
-        _flush()
-        return entries
-
-    for key, theme_label in themes:
-        sub_blocks = source_buckets.get(key, [])
-        if not sub_blocks:
+    for bucket_key, theme_label in themes:
+        plans = _scan_theme_bucket(bucket_key, theme_label)
+        if not plans:
             continue
+
         _heading(doc, theme_label, 2)
 
-        entries = _extract_brvm_impact_block(sub_blocks)
-        shown = 0
-        for region, actu_txt, impact_txt, societes_txt in entries[:4]:
-            region_clean = re.sub(r"^[^\w]+", "", region)
-            region_clean = re.sub(r"^Plan\s+", "", region_clean)
+        for plan_name, actus, impact_txt in plans:
+            # Titre du plan
+            p_plan = doc.add_paragraph()
+            p_plan.paragraph_format.space_before = Pt(6)
+            p_plan.paragraph_format.space_after = Pt(2)
+            r_plan = p_plan.add_run(f"▶  {plan_name}")
+            r_plan.bold = True
+            r_plan.font.size = Pt(10)
+            r_plan.font.color.rgb = _rgb("1A237E")
 
-            # Ligne principale : région + actualité
-            p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(4)
-            p.paragraph_format.space_after = Pt(1)
-            p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            _bold(p, f"{region_clean} — ", 10, "1558A7")
-            _normal(p, actu_txt[:350] + ("…" if len(actu_txt) > 350 else ""), 10)
+            # Actualités (liste à puces)
+            if actus:
+                for actu in actus[:4]:   # max 4 actualités par plan
+                    p_a = doc.add_paragraph(style="List Bullet")
+                    p_a.paragraph_format.space_before = Pt(1)
+                    p_a.paragraph_format.space_after = Pt(1)
+                    p_a.paragraph_format.left_indent = Pt(12)
+                    r_a = p_a.add_run(actu[:300] + ("…" if len(actu) > 300 else ""))
+                    r_a.font.size = Pt(9)
+            else:
+                p_nd = doc.add_paragraph()
+                p_nd.paragraph_format.space_after = Pt(2)
+                r_nd = p_nd.add_run("Aucune actualité disponible pour ce plan.")
+                r_nd.italic = True
+                r_nd.font.size = Pt(9)
+                r_nd.font.color.rgb = _rgb("999999")
 
-            # Bloc impact BRVM coloré
-            if impact_txt:
-                # Détecter le niveau d'impact
-                impact_level = "Neutre"
-                il = impact_txt.lower()
-                if any(w in il for w in ("positif", "favorable", "hausse", "soutien")):
-                    impact_level = "Positif"
-                elif any(w in il for w in ("négatif", "negatif", "baisse", "pression", "risque")):
-                    impact_level = "Négatif"
-                bg = _IMPACT_BG.get(impact_level, "F5F5F5")
-                fg = _IMPACT_FG.get(impact_level, "333333")
+            # Impact BRVM — texte complet depuis le rapport source
+            _render_impact_block(doc, impact_txt)
 
-                tbl_imp = doc.add_table(rows=1, cols=1)
-                tbl_imp.style = "Table Grid"
-                cell = tbl_imp.rows[0].cells[0]
-                _cell_bg(cell, bg)
-                # Marges internes
-                tcPr = cell._tc.get_or_add_tcPr()
-                tcMar = OxmlElement("w:tcMar")
-                for side in ("top","bottom","left","right"):
-                    el_m = OxmlElement(f"w:{side}")
-                    el_m.set(qn("w:w"), "80")
-                    el_m.set(qn("w:type"), "dxa")
-                    tcMar.append(el_m)
-                tcPr.append(tcMar)
-                p_imp = cell.paragraphs[0]
-                p_imp.paragraph_format.space_before = Pt(0)
-                p_imp.paragraph_format.space_after = Pt(0)
-                r_imp = p_imp.add_run(f"⚡ Impact BRVM : {impact_level}  —  ")
-                r_imp.bold = True
-                r_imp.font.size = Pt(9)
-                r_imp.font.color.rgb = _rgb(fg)
-                # Nettoyer le texte impact (enlever le préfixe déjà affiché)
-                clean_imp = re.sub(r"^⚡\s*Impact\s*(sur la BRVM|estimé)?\s*:?\s*", "", impact_txt, flags=re.IGNORECASE).strip()
-                r2 = p_imp.add_run(clean_imp[:200])
-                r2.font.size = Pt(9)
-                r2.font.color.rgb = _rgb("333333")
-
-                sp = doc.add_paragraph()
-                sp.paragraph_format.space_before = Pt(0)
-                sp.paragraph_format.space_after = Pt(1)
-
-            # Sociétés concernées
-            if societes_txt:
-                p_soc = doc.add_paragraph()
-                p_soc.paragraph_format.space_before = Pt(1)
-                p_soc.paragraph_format.space_after = Pt(4)
-                clean_soc = re.sub(r"^Sociétés concernées\s*:?\s*", "", societes_txt, flags=re.IGNORECASE).strip()
-                r_label = p_soc.add_run("Sociétés concernées : ")
-                r_label.bold = True
-                r_label.font.size = Pt(8.5)
-                r_label.font.color.rgb = _rgb("1558A7")
-                r_soc = p_soc.add_run(clean_soc[:250])
-                r_soc.font.size = Pt(8.5)
-                r_soc.font.color.rgb = _rgb("444444")
-                r_soc.italic = True
-
-            shown += 1
-
-    # SYNTHÈSE & RECOMMANDATION FINALE — tout le texte, on saute les tableaux
+    # ── Synthèse & Recommandation finale ──────────────────────────────────────
     synth_blocks = source_buckets.get("macro_synth", [])
     if synth_blocks:
         _heading(doc, "Synthèse & Recommandation finale", 2)
@@ -1348,85 +1383,18 @@ def _section_macro(doc, source_buckets, source_doc):
             if kind != "p":
                 continue
             st = _para_style(el)
-            if st == "Heading1":
+            if st in ("Titre1", "Heading1"):
                 continue
-            txt = _para_text(el).strip()
+            txt = _dedup_para(_para_text(el).strip())
             if not txt:
                 continue
-            # On saute les sous-titres "Sources utilisées" + listes par région
-            if st in ("Heading3", "Heading4"):
+            if st in ("Titre3", "Heading3", "Titre4", "Heading4"):
                 continue
             if txt.startswith(("🌐", "🌍", "🏦", "📈", "📋")) and len(txt) < 30:
-                continue  # marqueur de région avant un tableau
+                continue
+            if _MACRO_DROP_RX.search(txt):
+                continue
             _para(doc, txt)
-
-
-# ── Section 6 — Actualités du marché BRVM ────────────────────────────────────
-
-# Tickers BRVM par secteur — utilisés pour identifier les sociétés touchées
-# par chaque actualité présentée dans la note.
-_BRVM_SECTOR_TICKERS = {
-    "bancaire": ("Banque", [
-        ("BOAB", "BOA Burkina"), ("BOAC", "BOA Côte d'Ivoire"),
-        ("BOAM", "BOA Mali"), ("BOAN", "BOA Niger"), ("BOAS", "BOA Sénégal"),
-        ("SGBC", "SGBCI"), ("BICB", "BICI Bénin"), ("BICC", "BICI CI"),
-        ("NSBC", "NSIA Banque CI"), ("SIBC", "SIB"), ("CBIBF", "Coris Bank Burkina"),
-    ]),
-    "agricole": ("Agroalimentaire", [
-        ("SOGC", "SOGB"), ("SPHC", "SAPH"), ("PALC", "PALMCI"),
-        ("SCRC", "SUCRIVOIRE"), ("STBC", "SITAB"), ("SLBC", "SOLIBRA"),
-    ]),
-    "énergie": ("Énergie & Distribution", [
-        ("SHEC", "Vivo Energy CI"), ("SMBC", "SMB"), ("TTLC", "Total CI"),
-        ("TTLS", "Total Sénégal"), ("SIVC", "SIVOA"),
-    ]),
-    "télécoms": ("Télécoms", [
-        ("SNTS", "Sonatel"), ("ORAC", "Orange CI"), ("ONTBF", "Onatel BF"),
-    ]),
-    "industrie": ("Industrie", [
-        ("CABC", "CABC"), ("FTSC", "Filtisac"), ("SDSC", "SODE CI"),
-        ("SEMC", "SEMC"), ("STAC", "STA CI"),
-    ]),
-}
-
-_SECTOR_KEYWORDS = {
-    "bancaire": (
-        "banque", "bancaire", "crédit", "bceao", "monétaire", "taux directeur",
-        "refinancement", "liquidité bancaire", "boa ", "sgbci", "bici", "nsia",
-        "coris", "ecobank", "sib ",
-    ),
-    "agricole": (
-        "agricole", "agriculture", "cacao", "café", "coton", "hévéa", "caoutchouc",
-        "palmier", "huile de palme", "sucre", "récolte", "campagne",
-        "sogb", "saph", "palmci", "sucrivoire", "sitab", "solibra",
-    ),
-    "énergie": (
-        "pétrole", "essence", "carburant", "hydrocarbure", "gaz", "raffinerie",
-        "électricité", "énergie", "kwh", "barils", "brent", "shell", "total",
-        "vivo energy",
-    ),
-    "télécoms": (
-        "télécom", "telecom", "mobile money", "internet", "artci", "artp",
-        "fibre", "5g", "4g", "sonatel", "orange ", "onatel", "moov",
-    ),
-    "industrie": (
-        "industrie", "ciment", "usine", "production industrielle", "manufacture",
-        "cimenterie", "filtisac", "sode", "fabrication",
-    ),
-}
-
-_IMPACT_POS_KW = (
-    "hausse", "croissance", "record", "succès", "bénéfice", "dividende",
-    "investissement", "expansion", "augmentation", "amélioration", "positif",
-    "accord", "signature", "rebond", "performance", "progression", "gain",
-    "renforcement", "levée de fonds", "obligataire réussi", "souscription",
-)
-_IMPACT_NEG_KW = (
-    "baisse", "perte", "déficit", "crise", "chute", "recul", "défaut",
-    "sanction", "fermeture", "grève", "négatif", "alerte", "risque",
-    "dégradation", "contraction", "ralentissement", "tension", "litige",
-    "suspension", "report",
-)
 
 
 def _detect_brvm_sector(text: str):
