@@ -288,6 +288,107 @@ def _blob_to_png(blob: bytes, ticker: str = "?") -> bytes | None:
     return None
 
 
+def _annotate_source_chart(png_bytes: bytes, s: dict) -> bytes:
+    """
+    Prend le PNG brut extrait du rapport Word source (graphique avec cours réels
+    + prédictions J+1→J+10) et ajoute un bandeau de synthèse sous l'image avec :
+      ▲ Plus haut 100j  |  Cours actuel (perf%)  |  ▼ Plus bas 100j
+
+    Les valeurs sont lues directement depuis le dict de la société (s).
+    Si PIL échoue ou si les données sont insuffisantes, retourne le PNG original intact.
+    """
+    from PIL import Image as _Img, ImageDraw, ImageFont
+    import io as _io
+
+    try:
+        img = _Img.open(_io.BytesIO(png_bytes)).convert("RGBA")
+        W, H = img.size
+
+        # ── Récupérer les valeurs ─────────────────────────────────────────────
+        def _fval(key):
+            v = s.get(key)
+            if v is None:
+                return None
+            try:
+                return float(str(v).replace(",", ".").replace(" ", "")
+                             .replace("\u00a0", "").replace("%", "").strip())
+            except ValueError:
+                return None
+
+        plus_haut    = _fval("plus_haut_100j")
+        plus_bas     = _fval("plus_bas_100j")
+        cours_actuel = _fval("cours") or _fval("cours_fin")
+        perf_100j    = s.get("perf_100j", "")
+
+        # Si données minimales absentes, retourner le PNG tel quel
+        if plus_haut is None and plus_bas is None and cours_actuel is None:
+            return png_bytes
+
+        # ── Polices ───────────────────────────────────────────────────────────
+        _FONT_PATH_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+        _FONT_PATH_REG  = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+        try:
+            font_val = ImageFont.truetype(_FONT_PATH_BOLD, max(16, W // 52))
+            font_lbl = ImageFont.truetype(_FONT_PATH_REG,  max(12, W // 72))
+        except Exception:
+            font_val = ImageFont.load_default()
+            font_lbl = font_val
+
+        # ── Construire le bandeau ─────────────────────────────────────────────
+        BAND_H = max(52, W // 20)
+        new_img = _Img.new("RGBA", (W, H + BAND_H), (255, 255, 255, 255))
+        new_img.paste(img, (0, 0), img)
+        draw = ImageDraw.Draw(new_img)
+
+        # Fond du bandeau (bleu très clair)
+        draw.rectangle([(0, H), (W, H + BAND_H)], fill=(240, 244, 255, 255))
+        # Ligne de séparation
+        draw.line([(0, H), (W, H)], fill=(180, 195, 230), width=2)
+        # Séparateurs verticaux entre colonnes
+        for x in (W // 3, 2 * W // 3):
+            draw.line([(x, H + 6), (x, H + BAND_H - 6)], fill=(200, 210, 235), width=1)
+
+        col_w = W // 3
+        PAD   = max(14, W // 80)
+        TOP_L = H + max(5, BAND_H // 9)
+        TOP_V = H + max(22, BAND_H // 3)
+
+        def _fmt(v):
+            if v is None:
+                return "N/D"
+            return f"{v:,.0f} FCFA".replace(",", "\u00a0")
+
+        # Colonne 1 — Plus haut (vert)
+        C_HAUT = (15, 157, 88)
+        draw.text((PAD, TOP_L), "\u25b2 Plus haut 100j", font=font_lbl, fill=C_HAUT)
+        draw.text((PAD, TOP_V), _fmt(plus_haut),          font=font_val, fill=C_HAUT)
+
+        # Colonne 2 — Cours actuel (bleu marine)
+        C_COURS = (26, 35, 126)
+        ca_label = "Cours actuel"
+        perf_str = f"  ({perf_100j})" if perf_100j else ""
+        draw.text((col_w + PAD, TOP_L), ca_label,                      font=font_lbl, fill=C_COURS)
+        draw.text((col_w + PAD, TOP_V), _fmt(cours_actuel) + perf_str, font=font_val, fill=C_COURS)
+
+        # Colonne 3 — Plus bas (rouge)
+        C_BAS = (217, 48, 37)
+        draw.text((2 * col_w + PAD, TOP_L), "\u25bc Plus bas 100j", font=font_lbl, fill=C_BAS)
+        draw.text((2 * col_w + PAD, TOP_V), _fmt(plus_bas),          font=font_val, fill=C_BAS)
+
+        # ── Sérialiser ───────────────────────────────────────────────────────
+        buf = _io.BytesIO()
+        new_img.save(buf, format="PNG", optimize=False)
+        result = buf.getvalue()
+        print(f"  [Fiches/Chart] {s.get('ticker','?')} : bandeau annoté ajouté "
+              f"({W}×{H+BAND_H}px, {len(result):,} bytes)")
+        return result
+
+    except Exception as exc:
+        print(f"  [Fiches/Chart] {s.get('ticker','?')} : annotation échouée ({exc}) "
+              "— PNG source utilisé sans modification")
+        return png_bytes
+
+
 def _extract_images_from_docx(doc_bytes: bytes,
                                known_tickers: list | None = None) -> dict:
     """
@@ -1108,38 +1209,24 @@ def build_market_table(doc, s: dict):
 
 def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
     """
-    Graphique + commentaire analytique de la courbe.
-
-    Priorité d'affichage :
-      1. ``source_png``  — image extraite directement du document Word source
-                           (graphique original : plus précis, plus fidèle).
-      2. Graphique matplotlib reconstruit à partir des 4 bornes numériques
-         (cours_debut / cours_fin / plus_haut_100j / plus_bas_100j).
-      3. Message d'absence si aucune des deux sources n'est disponible.
+    Insère le graphique extrait du rapport Word source + commentaire analytique.
+    Seul le graphique original du rapport est utilisé (cours réels + prédictions).
+    Si l'image source est absente, un message d'absence est affiché.
 
     Paramètres
     ----------
-    source_png : bytes PNG pré-extraits par _extract_images_from_docx(), ou None.
+    source_png : bytes PNG extrait par _extract_images_from_docx(), ou None.
     """
     ticker = _s(s, "ticker", "?")
     png_bytes: bytes | None = None
-    chart_origin: str = ""
 
-    # ── 1. Image source (priorité absolue) ───────────────────────────────────
+    # Graphique source Word — seule source acceptée
     if source_png and len(source_png) > 1000:
-        png_bytes = source_png
-        chart_origin = "source Word"
-        print(f"  [Fiches/Chart] {ticker} : utilisation du graphique source Word "
-              f"({len(png_bytes)} bytes)")
-
-    # ── 2. Fallback matplotlib ────────────────────────────────────────────────
-    if png_bytes is None:
-        try:
-            png_bytes = _build_price_chart_png(s)
-            if png_bytes:
-                chart_origin = "matplotlib (reconstruction)"
-        except Exception as exc:
-            print(f"  [Fiches/Chart] {ticker} : échec matplotlib — {exc}")
+        # Ajouter le bandeau Plus haut / Cours actuel / Plus bas sous le graphique
+        png_bytes = _annotate_source_chart(source_png, s)
+    else:
+        print(f"  [Fiches/Chart] {ticker} : graphique source absent "
+              f"(source_png={'None' if source_png is None else str(len(source_png))+' bytes'})")
 
     # ── Insertion de l'image dans le document ─────────────────────────────────
     if png_bytes and len(png_bytes) > 1000:
@@ -1174,7 +1261,7 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
         p_leg.paragraph_format.space_before = Pt(0)
         p_leg.paragraph_format.space_after = Pt(4)
         r_leg = p_leg.add_run(
-            f"Graphique — {chart_origin} · {ticker}"
+            f"Cours réels + prédictions J+1→J+10  ·  {ticker}"
         )
         r_leg.italic = True
         r_leg.font.size = Pt(7)
@@ -2003,19 +2090,19 @@ def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> list:
               "abandon (voir logs Extractor).")
         return []
 
-    # Affiner le mapping images maintenant qu'on connaît les tickers LLM
-    # (relancer l'extraction avec la liste des tickers connus si le premier
-    #  passage n'a rien trouvé — améliore le filtre)
-    if not images_map:
-        known = [str(c.get("ticker") or "").strip().upper() for c in raw_companies if c.get("ticker")]
-        if known:
-            print(f"  [Fiches/{freq}] Nouvelle tentative extraction images avec tickers connus : {known}")
-            try:
-                images_map = _extract_images_from_docx(docs_bytes[0], known_tickers=known)
-                print(f"  [Fiches/{freq}] {len(images_map)} graphique(s) après relance : "
-                      f"{list(images_map.keys()) or '(aucun)'}")
-            except Exception as exc:
-                print(f"  [Fiches/{freq}] AVERTISSEMENT relance images : {exc}")
+    # Étape 0b : ré-extraction TOUJOURS avec les tickers LLM confirmés.
+    # La première passe (sans filtre) peut avoir associé de faux tickers
+    # (ACHAT, RISQUE, CV...). On réextrait maintenant avec la liste stricte
+    # des 47 sociétés pour garantir la bonne association image ↔ ticker.
+    known = [str(c.get("ticker") or "").strip().upper() for c in raw_companies if c.get("ticker")]
+    if known:
+        print(f"  [Fiches/{freq}] Étape 0b : ré-extraction images avec {len(known)} tickers LLM...")
+        try:
+            images_map = _extract_images_from_docx(docs_bytes[0], known_tickers=known)
+            print(f"  [Fiches/{freq}] {len(images_map)}/{len(known)} graphique(s) : "
+                  f"{list(images_map.keys()) or '(aucun)'}")
+        except Exception as exc:
+            print(f"  [Fiches/{freq}] AVERTISSEMENT ré-extraction : {exc}")
 
     # ── Étape 3 : enrichissement + génération Word ────────────────────────────
     print(f"  [Fiches/{freq}] Étape 3/3 : Enrichissement Python + génération Word...")
