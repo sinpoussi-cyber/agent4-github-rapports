@@ -1174,6 +1174,30 @@ def _section_liquidite(doc, source_buckets, source_doc):
 
 # ── Section 5 — Analyse macro ────────────────────────────────────────────────
 
+_SECTOR_KEYWORDS = {
+    "bancaire":   ["banque", "bancaire", "crédit", "taux", "monétaire", "bceao",
+                   "interbancaire", "liquidité", "dépôt", "prêt"],
+    "agricole":   ["cacao", "café", "hévéa", "palmier", "coton", "sucre",
+                   "agricole", "récolte", "matière première"],
+    "énergie":    ["pétrole", "énergie", "hydrocarbure", "carburant", "gaz",
+                   "électricité", "renouvelable"],
+    "télécoms":   ["télécom", "mobile", "internet", "réseau", "opérateur",
+                   "connectivité", "numérique"],
+    "industrie":  ["industrie", "production", "manufacture", "construction",
+                   "bâtiment", "infrastructure"],
+}
+
+_IMPACT_POS_KW = (
+    "positif", "favorable", "hausse", "soutien", "croissance", "bénéfique",
+    "opportunité", "dynamisme", "progression", "rebond", "amélioration",
+)
+_IMPACT_NEG_KW = (
+    "négatif", "negatif", "baisse", "pression", "risque", "fragilise",
+    "pénalise", "incertitude", "ralentissement", "tension", "sorties",
+    "chute", "recul", "défaut", "sanction", "fermeture", "grève",
+    "dégradation", "contraction", "litige", "suspension", "report",
+)
+
 _MACRO_DROP_RX = re.compile(
     r"(?i)(données insuffisantes|aucune information|absolument\.|^---$)"
 )
