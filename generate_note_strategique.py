@@ -7,7 +7,6 @@ from datetime import date
 
 logger = logging.getLogger(__name__)
 
-import anthropic
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -16,6 +15,8 @@ from docx.shared import Cm, Pt, RGBColor
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from llm_client import call_json  # noqa: E402 — après load_dotenv pour que .env soit chargé
 
 _DESTINATAIRE = (
     "À l'attention de Madame Corinne Houmou ORMON\n"
@@ -615,7 +616,6 @@ def _build_context(docs_bytes: list, freq: str) -> str:
 # ── Extraction structurée via Claude ─────────────────────────────────────────
 
 def _extract_data_with_claude(full_text: str, freq: str = "JOUR", period_info: dict = None) -> dict:
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     text = full_text[:40000]
 
     _period_descs = {
@@ -740,19 +740,10 @@ FORMAT JSON ATTENDU :
   "recommandation_finale": "Le marché présente..."
 }}"""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = message.content[0].text.strip()
-    start = raw.find("{")
-    end = raw.rfind("}") + 1
-    if start == -1 or end == 0:
-        return {}
     try:
-        return json.loads(raw[start:end])
-    except json.JSONDecodeError:
+        return call_json(prompt, max_tokens=4096)
+    except Exception as exc:
+        logger.warning("[Note] Extraction LLM échouée : %s", exc)
         return {}
 
 
