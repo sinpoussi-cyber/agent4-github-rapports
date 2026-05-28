@@ -1187,6 +1187,85 @@ _SECTOR_KEYWORDS = {
                    "bâtiment", "infrastructure"],
 }
 
+# Mapping secteur → (label_affiché, [(ticker, nom_court), ...])
+# Utilisé dans _section_actualites pour lister les sociétés concernées par une actualité.
+_BRVM_SECTOR_TICKERS = {
+    "bancaire": (
+        "Banques & Services financiers",
+        [
+            ("BOAC",  "BOA Côte d'Ivoire"),
+            ("BOAB",  "BOA Bénin"),
+            ("BOABF", "BOA Burkina Faso"),
+            ("BOAM",  "BOA Mali"),
+            ("BOAN",  "BOA Niger"),
+            ("BOAS",  "BOA Sénégal"),
+            ("SGBC",  "Société Générale Burkina Faso"),
+            ("SIBC",  "SIB Côte d'Ivoire"),
+            ("BICB",  "BIC Burkina Faso"),
+            ("BICC",  "BICI Côte d'Ivoire"),
+            ("BNBC",  "BNI Côte d'Ivoire"),
+            ("CBIBF", "Coris Bank Burkina Faso"),
+            ("NSBC",  "NSIA Banque CI"),
+            ("SMBC",  "SMB CI"),
+            ("SLBC",  "SLB CI"),
+            ("ETIT",  "Ecobank Transnational"),
+            ("ECOC",  "Ecobank CI"),
+            ("LNBB",  "La Nationale des Banques BF"),
+            ("CABC",  "CAB CI"),
+            ("SNTS",  "Société Nationale des Transports"),
+        ],
+    ),
+    "agricole": (
+        "Agriculture & Agroalimentaire",
+        [
+            ("PALC",  "PALMCI"),
+            ("SOGC",  "SOGB"),
+            ("CFAC",  "CFAO"),
+            ("SAFC",  "SAF-CACAO"),
+            ("SCRC",  "SCR CI"),
+            ("SICC",  "SIC CI"),
+            ("UNLC",  "UNIL CI"),
+            ("NEIC",  "NEI CI"),
+        ],
+    ),
+    "énergie": (
+        "Énergie & Services publics",
+        [
+            ("CIEC",  "CIE CI"),
+            ("ONTBF", "ONT BF"),
+            ("SHEC",  "SHE CI"),
+            ("SPHC",  "SPH CI"),
+            ("STAC",  "SETAO CI"),
+        ],
+    ),
+    "télécoms": (
+        "Télécommunications",
+        [
+            ("ORAC",  "Orange CI"),
+            ("ORGT",  "ONATEL BF"),
+        ],
+    ),
+    "industrie": (
+        "Industrie & Distribution",
+        [
+            ("BICC",  "BICI CI"),
+            ("SDCC",  "SDC CI"),
+            ("SDSC",  "SDS CI"),
+            ("SEMC",  "SEMCO CI"),
+            ("SIVC",  "SIV CI"),
+            ("STBC",  "STB CI"),
+            ("TTLC",  "TTL CI"),
+            ("TTLS",  "TTLS"),
+            ("NTLC",  "NTL CI"),
+            ("FTSC",  "FILTISAC CI"),
+            ("PRSC",  "PRS CI"),
+            ("UNXC",  "UNX CI"),
+            ("ABJC",  "SERVAIR ABIDJAN CI"),
+            ("ORGT",  "ONATEL BF"),
+        ],
+    ),
+}
+
 _IMPACT_POS_KW = (
     "positif", "favorable", "hausse", "soutien", "croissance", "bénéfique",
     "opportunité", "dynamisme", "progression", "rebond", "amélioration",
