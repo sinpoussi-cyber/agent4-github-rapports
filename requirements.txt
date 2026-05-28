@@ -1,9 +1,19 @@
+# ── Core ──────────────────────────────────────────────────────────────────────
 requests
 python-docx
-anthropic>=0.40.0
 python-dotenv
+
+# ── LLM Providers — multi-fournisseurs avec fallback automatique ──────────────
+anthropic>=0.40.0          # Primaire : Claude Sonnet (ANTHROPIC_API_KEY)
+google-generativeai>=0.8.0 # Fallback 1 : Gemini 1.5 Pro (GEMINI_API_KEY)
+openai>=1.0.0              # Fallback 2 : DeepSeek via API OpenAI-compatible (DEEPSEEK_API_KEY)
+mistralai>=1.0.0           # Fallback 3 : Mistral Large (MISTRAL_API_KEY)
+
+# ── Google Auth (Gmail API) ───────────────────────────────────────────────────
 google-auth
 google-auth-oauthlib
 google-api-python-client
+
+# ── GitHub & Visualisation ────────────────────────────────────────────────────
 PyGithub
 matplotlib
