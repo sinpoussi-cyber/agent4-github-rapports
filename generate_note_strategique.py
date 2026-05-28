@@ -380,6 +380,7 @@ _SOURCE_ANCHORS = {
     "classement":       "CLASSEMENT DES SOCIÉTÉS",
     "portefeuilles":    "PORTEFEUILLES MODÈLES",
     "alertes":          "ALERTES DU JOUR",
+    "recap_risques":    "RÉCAPITULATIF DES RISQUES",
     "toc_detail":       "TABLE DES MATIÈRES - ANALYSES DÉTAILLÉES",
     "predictions":      "PRÉDICTIONS",
     "analyse_financiere": "ANALYSE FINANCIÈRE",
@@ -2461,7 +2462,95 @@ def _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets):
 
 # ── Build complet ─────────────────────────────────────────────────────────────
 
-def _build_docx(data: dict, source_doc, source_buckets: dict, date_str: str) -> bytes:
+def _section_matrice_risque(doc, source_buckets, source_doc):
+    """
+    Section Risques — RÉCAPITULATIF DES RISQUES — TOUTES LES SOCIÉTÉS.
+
+    Lit le bucket 'recap_risques' (ancre "RÉCAPITULATIF DES RISQUES") du rapport
+    source et reproduit fidèlement :
+      1. Texte d'introduction
+      2. Vue d'ensemble des niveaux de risque (tableau + commentaire)
+      3. Top 5 sociétés les plus risquées (tableau + détails)
+      4. Top 5 sociétés les moins risquées (tableau + détails)
+      5. Tableau complet — toutes les sociétés classées par score de risque
+    """
+    _heading(doc, "RÉCAPITULATIF DES RISQUES — TOUTES LES SOCIÉTÉS")
+
+    blocks = source_buckets.get("recap_risques", [])
+    if not blocks:
+        # Fallback : ancrage alternatif
+        blocks = source_buckets.get("matrice_risque", [])
+    if not blocks:
+        _para(doc, "Section récapitulatif des risques non identifiée dans le rapport source.")
+        return
+
+    # ── Couleurs niveau de risque ─────────────────────────────────────────────
+    def _risk_color(level: str) -> tuple:
+        l = level.lower()
+        if "très élevé" in l or "tres eleve" in l:
+            return "FF0000", "FFC7CE"
+        if "élevé" in l or "eleve" in l:
+            return "D93025", "FFC7CE"
+        if "moyen" in l:
+            return "E37400", "FFEB9C"
+        return "0F9D58", "C6EFCE"  # faible par défaut
+
+    current_h2 = None
+    tables_done = {}   # heading → liste de tables déjà copiées
+
+    for kind, el in blocks:
+        if kind == "p":
+            st  = _para_style(el)
+            raw = _para_text(el).strip()
+            txt = _dedup_text(raw)
+            if not txt:
+                continue
+
+            if st in ("Heading1", "Titre1"):
+                continue   # titre principal déjà affiché
+
+            if st in ("Heading2", "Titre2"):
+                current_h2 = txt
+                _heading(doc, txt, 2)
+                continue
+
+            if st in ("Heading3", "Titre3"):
+                _heading(doc, txt, 3)
+                continue
+
+            if st in ("ListBullet", "Listepuces", "ListParagraph"):
+                p_b = doc.add_paragraph()
+                p_b.paragraph_format.space_before = Pt(1)
+                p_b.paragraph_format.space_after  = Pt(1)
+                p_b.paragraph_format.left_indent  = Pt(12)
+                r_b = p_b.add_run(f"• {txt}")
+                r_b.font.size = Pt(9)
+                continue
+
+            # Paragraphe ordinaire
+            _para(doc, txt)
+
+        elif kind == "tbl":
+            _copy_source_table(
+                doc, el,
+                header_bg="1A237E", header_fg="FFFFFF",
+                max_rows=60,        # tableau complet = 48 lignes + en-tête
+            )
+            doc.add_paragraph()
+
+
+def _dedup_text(s: str) -> str:
+    """Déduplique un texte triplé 'XYZXYZXYZ' → 'XYZ'."""
+    n = len(s)
+    for d in (3, 2):
+        if n % d == 0:
+            p = s[:n // d]
+            if s == p * d:
+                return p
+    return s
+
+
+
     doc = Document()
     section = doc.sections[0]
     section.page_width = Cm(21)
@@ -2478,12 +2567,13 @@ def _build_docx(data: dict, source_doc, source_buckets: dict, date_str: str) -> 
     _section_secteurs(doc, source_buckets, source_doc)              # 3 — Analyse par secteur
     _section_liquidite(doc, source_buckets, source_doc)             # 4 — Liquidité + 2 histogrammes
     _section_macro(doc, source_buckets, source_doc)                 # 5 — Macro condensé
-    _section_actualites(doc, source_buckets, source_doc)            # 6 — Actualités résumé
-    _section_classement(doc, source_buckets, source_doc)            # 7 — Classement /100
-    _section_portefeuilles(doc, source_buckets, source_doc)         # 8 — 3 portefeuilles
-    _section_alertes(doc, source_buckets, source_doc)               # 9 — Alertes du jour
-    _section_predictions_ia(doc, source_doc, source_buckets)        # 10 — Prédictions IA (J+1 → J+10)
-    _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets)  # 11 — Analyse financière sectorielle
+    _section_matrice_risque(doc, source_buckets, source_doc)        # 6 — Récapitulatif risques
+    _section_actualites(doc, source_buckets, source_doc)            # 7 — Actualités résumé
+    _section_classement(doc, source_buckets, source_doc)            # 8 — Classement /100
+    _section_portefeuilles(doc, source_buckets, source_doc)         # 9 — 3 portefeuilles
+    _section_alertes(doc, source_buckets, source_doc)               # 10 — Alertes du jour
+    _section_predictions_ia(doc, source_doc, source_buckets)        # 11 — Prédictions IA (J+1 → J+10)
+    _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets)  # 12 — Analyse financière sectorielle
 
     buf = io.BytesIO()
     doc.save(buf)
