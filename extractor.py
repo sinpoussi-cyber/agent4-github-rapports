@@ -7,12 +7,11 @@ import json
 import os
 import re
 
-import anthropic
 from dotenv import load_dotenv
+from llm_client import call, call_json
 
 load_dotenv()
 
-_MODEL = "claude-sonnet-4-20250514"
 _BATCH_SIZE = 3
 _MAX_RETRIES = 3
 
@@ -313,22 +312,14 @@ def get_tickers(sections: dict) -> list:
     snippet = text[:_MAX_CHARS_TICKERS]
 
     print(f"  [Extractor/Tickers] Texte utilisé : {len(snippet):,} chars")
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    msg = client.messages.create(
-        model=_MODEL,
-        max_tokens=512,
-        messages=[{
-            "role": "user",
-            "content": (
-                "Extrais UNIQUEMENT la liste des tickers/symboles boursiers de toutes "
-                "les sociétés BRVM présentes dans ce rapport.\n"
-                "Réponds UNIQUEMENT avec du JSON valide. Aucun texte hors JSON.\n"
-                'Retourne UNIQUEMENT : {"tickers": ["SGBCI", "SONATEL", ...]}\n\n'
-                f"RAPPORT :\n{snippet}"
-            ),
-        }],
+    prompt_tickers = (
+        "Extrais UNIQUEMENT la liste des tickers/symboles boursiers de toutes "
+        "les sociétés BRVM présentes dans ce rapport.\n"
+        "Réponds UNIQUEMENT avec du JSON valide. Aucun texte hors JSON.\n"
+        'Retourne UNIQUEMENT : {"tickers": ["SGBCI", "SONATEL", ...]}\n\n'
+        f"RAPPORT :\n{snippet}"
     )
-    raw = msg.content[0].text.strip()
+    raw = call(prompt_tickers, max_tokens=512)
     print(f"  [Extractor/Tickers] Réponse ({len(raw)} chars) : {raw[:200]}")
     cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip()
     s, e = cleaned.find("{"), cleaned.rfind("}") + 1
@@ -353,7 +344,6 @@ def extract_brvm_global(sections: dict) -> dict:
     snippet   = brvm_text[:_MAX_CHARS_BRVM_GLOB]
     print(f"  [Extractor/BRVM] Section globale : {len(brvm_text):,} chars -> envoi {len(snippet):,} chars")
 
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     prompt = (
         "Tu analyses un rapport boursier BRVM. Extrais les données globales du marché.\n\n"
         "RÈGLES STRICTES :\n"
@@ -372,11 +362,7 @@ def extract_brvm_global(sections: dict) -> dict:
         f"TEXTE SOURCE :\n{snippet}"
     )
     try:
-        msg = client.messages.create(
-            model=_MODEL, max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw     = msg.content[0].text.strip()
+        raw = call(prompt, max_tokens=512)
         cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip()
         s, e    = cleaned.find("{"), cleaned.rfind("}") + 1
         if s != -1 and e > 0:
@@ -395,8 +381,6 @@ def extract_batch(sections: dict, tickers: list,
     Utilise le contexte ciblé (build_ticker_context) plutôt que le texte brut complet.
     max_tokens = 2048 pour accueillir toutes les données sans troncature.
     """
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-
     period_ctx = ""
     if freq != "JOUR":
         _descs = {"HEBDO": "7 derniers jours", "MENSUEL": "30 derniers jours",
@@ -433,11 +417,7 @@ def extract_batch(sections: dict, tickers: list,
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            msg = client.messages.create(
-                model=_MODEL, max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = msg.content[0].text.strip()
+            raw = call(prompt, max_tokens=2048)
             print(f"  [Extractor/Batch] Tentative {attempt}/{_MAX_RETRIES} — "
                   f"{len(raw)} chars reçus (prompt envoyé : {len(prompt):,} chars)")
 
@@ -522,7 +502,6 @@ def extract_extra(sections: dict, tickers: list) -> list:
     Pass séparé du batch principal pour isoler la complexité de cette extraction.
     Retourne list[dict] indexé par ticker.
     """
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     ticker_context = build_ticker_context(sections, tickers)
     tickers_str = ", ".join(tickers)
 
@@ -642,11 +621,7 @@ def extract_extra(sections: dict, tickers: list) -> list:
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            msg = client.messages.create(
-                model=_MODEL, max_tokens=8192,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = msg.content[0].text.strip()
+            raw = call(prompt, max_tokens=8192)
             print(f"  [Extractor/Extra] Tentative {attempt}/{_MAX_RETRIES} — "
                   f"{len(raw)} chars reçus")
             cleaned = clean_json_string(raw)
