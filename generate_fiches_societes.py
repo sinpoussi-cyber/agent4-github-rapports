@@ -1374,6 +1374,23 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
     r_synth = p_synth.add_run(synthese)
     r_synth.font.size = Pt(9)
 
+    # ── Commentaire narratif du cours (extrait du rapport source, PARTIE 1) ──
+    # Le rapport source contient un paragraphe "PARTIE 1 : ANALYSE DU COURS"
+    # avec le texte d'analyse réel (ex: "Sur les 100 derniers jours, le cours
+    # d'ABJC a subi une correction de -10.25%..."). On l'affiche ici.
+    _src_doc = s.get("_source_doc_ref")
+    if _src_doc is not None:
+        cours_comment = _extract_cours_commentary(_src_doc, ticker)
+        if cours_comment:
+            p_cc = doc.add_paragraph()
+            p_cc.paragraph_format.space_before = Pt(2)
+            p_cc.paragraph_format.space_after  = Pt(4)
+            p_cc.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r_cc = p_cc.add_run(cours_comment)
+            r_cc.font.size = Pt(9)
+            r_cc.italic    = True
+            r_cc.font.color.rgb = _rgb("333333")
+
     # ── Bloc signal coloré (1 ligne) ──────────────────────────────────────────
     tbl2 = doc.add_table(rows=1, cols=1)
     tbl2.style = "Table Grid"
@@ -2051,9 +2068,354 @@ def _pied(doc, date_str: str, freq: str = "JOUR", period_info: dict = None):
 
 # ── Assemblage de la fiche ────────────────────────────────────────────────────
 
+def build_risques(doc, s: dict, source_doc=None):
+    """
+    Section PROFIL DE RISQUE de la fiche société.
+
+    Affiche 5 blocs :
+      1. SCORE DE RISQUE calculé (extrait du rapport source : score/100, barre,
+         tableau des 5 critères — Volatilité, Bêta, Liquidité, Divergence, Stabilité)
+      2. Indicateurs de risque globaux (niveau, horizon, volatilité, bêta)
+      3. Faiblesses financières + risques (LLM)
+      4. Divergence technique/fondamentale
+      5. Texte narratif PARTIE 3 & 4 (rapport source)
+    """
+    _section_heading(doc, "PROFIL DE RISQUE")
+
+    ticker    = _s(s, "ticker", "?")
+    risque    = _s(s, "risque", "—")
+    horizon   = _s(s, "horizon", "—")
+    volat     = _s(s, "volatilite", "—")
+    beta      = _s(s, "beta", "—")
+    confiance = _s(s, "confiance", "—")
+    divergence = _s(s, "divergence", "—")
+
+    # ── Couleur selon niveau de risque ────────────────────────────────────────
+    r_low = risque.lower()
+    if "faible" in r_low:
+        risk_bg, risk_fg = "C6EFCE", "0F9D58"
+        risk_emoji = "🟢"
+    elif "élevé" in r_low or "eleve" in r_low:
+        risk_bg, risk_fg = "FFC7CE", "D93025"
+        risk_emoji = "🔴"
+    else:
+        risk_bg, risk_fg = "FFEB9C", "E37400"
+        risk_emoji = "🟡"
+
+    # ── 0. Score de risque calculé (depuis le rapport source) ────────────────
+    if source_doc is not None:
+        risk_data = _extract_risk_score_data(source_doc, ticker)
+        if risk_data:
+            score_v = risk_data["score_str"]
+            niveau_v = risk_data["niveau"]
+            barre_v  = risk_data["barre"]
+
+            # En-tête score
+            p_sc = doc.add_paragraph()
+            p_sc.paragraph_format.space_before = Pt(4)
+            p_sc.paragraph_format.space_after  = Pt(1)
+            r_sc = p_sc.add_run(f"⚠️  SCORE DE RISQUE — {score_v}/100  →  {niveau_v}")
+            r_sc.bold = True; r_sc.font.size = Pt(11); r_sc.font.color.rgb = _rgb(risk_fg)
+
+            # Barre ASCII
+            if barre_v:
+                p_bar = doc.add_paragraph()
+                p_bar.paragraph_format.space_before = Pt(0)
+                p_bar.paragraph_format.space_after  = Pt(4)
+                r_bar = p_bar.add_run(barre_v)
+                r_bar.font.name = "Courier New"; r_bar.font.size = Pt(10)
+                r_bar.font.color.rgb = _rgb(risk_fg)
+
+            # Tableau des 5 critères
+            if risk_data["criteres"]:
+                _sub_heading(doc, "Détail des critères de risque")
+                tbl_r = doc.add_table(rows=1, cols=3)
+                tbl_r.style = "Table Grid"
+                for ci, h in enumerate(["Critère", "Valeur mesurée", "Interprétation"]):
+                    _cw(tbl_r.rows[0].cells[ci], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
+                for crit in risk_data["criteres"]:
+                    tr = tbl_r.add_row()
+                    # Nettoyer le nom du critère (enlever emoji + poids)
+                    nom_clean = re.sub(r'^[^\w]+', '', crit["nom"])
+                    nom_clean = re.sub(r'\s*\(\d+%\)', '', nom_clean).strip()
+                    _cw(tr.cells[0], nom_clean[:40], bold=True, size=8, bg="EBF0FA")
+                    _cw(tr.cells[1], crit["valeur"][:70], size=8)
+                    interp_clean = re.sub(r'^[⚠️🟢🔴🔵ℹ️]+\s*', '', crit["interp"]).strip()
+                    _cw(tr.cells[2], interp_clean[:60], size=8,
+                        bg="EBF7EE" if "🟢" in crit["interp"] else
+                           ("FDEEEE" if "🔴" in crit["interp"] else "FFF8E6"))
+                doc.add_paragraph()
+
+    # ── 1. Bloc indicateurs globaux ───────────────────────────────────────────
+    tbl = doc.add_table(rows=2, cols=5)
+    tbl.style = "Table Grid"
+    for i, h in enumerate(["Niveau de risque", "Horizon", "Volatilité", "Bêta", "Confiance"]):
+        _cw(tbl.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
+    vals = [f"{risk_emoji} {risque}", horizon, volat, beta, confiance]
+    bgs  = [risk_bg, "F5F5F5", "F5F5F5", "F5F5F5", "F5F5F5"]
+    fgs  = [risk_fg,  "333333", "333333", "333333", "333333"]
+    for i, (v, bg, fg) in enumerate(zip(vals, bgs, fgs)):
+        _cw(tbl.rows[1].cells[i], v, bold=(i == 0), size=9, bg=bg, color=fg)
+    doc.add_paragraph()
+
+    # ── 2. Faiblesses financières (LLM) ──────────────────────────────────────
+    faiblesses = _sl(s, "faiblesses_financieres")
+    risques_list = _sl(s, "risques")
+    all_risks = list(dict.fromkeys(faiblesses + risques_list))  # dédoublonner
+
+    if all_risks:
+        _sub_heading(doc, "Facteurs de risque identifiés")
+        tbl2 = doc.add_table(rows=len(all_risks), cols=2)
+        tbl2.style = "Table Grid"
+        for i, risk_txt in enumerate(all_risks[:8]):
+            # Numéro
+            _cw(tbl2.rows[i].cells[0], str(i + 1), bold=True, size=9,
+                bg=risk_bg, color=risk_fg)
+            # Texte du risque
+            _cw(tbl2.rows[i].cells[1], str(risk_txt).strip(), size=9,
+                bg="FFF8F8" if "élevé" in risque.lower() else "FFFFF0")
+        doc.add_paragraph()
+
+    # ── 3. Divergence technique/fondamentale ──────────────────────────────────
+    if divergence and divergence.lower() not in ("aucune", "—", "", "none"):
+        tbl3 = doc.add_table(rows=1, cols=1)
+        tbl3.style = "Table Grid"
+        cell3 = tbl3.rows[0].cells[0]
+        _cell_bg(cell3, "FFF3CD")
+        tcPr = cell3._tc.get_or_add_tcPr()
+        tcMar = OxmlElement("w:tcMar")
+        for side in ("top","bottom","left","right"):
+            em = OxmlElement(f"w:{side}")
+            em.set(qn("w:w"), "100")
+            em.set(qn("w:type"), "dxa")
+            tcMar.append(em)
+        tcPr.append(tcMar)
+        p3 = cell3.paragraphs[0]
+        p3.paragraph_format.space_before = Pt(0)
+        p3.paragraph_format.space_after  = Pt(0)
+        r3a = p3.add_run("⚡ Divergence technique / fondamentale : ")
+        r3a.bold = True; r3a.font.size = Pt(9); r3a.font.color.rgb = _rgb("7D5200")
+        r3b = p3.add_run(divergence)
+        r3b.font.size = Pt(9); r3b.font.color.rgb = _rgb("444444")
+        sp = doc.add_paragraph(); sp.paragraph_format.space_after = Pt(4)
+
+    # ── 4. Texte narratif du rapport source ───────────────────────────────────
+    # Extraire les paragraphes "PARTIE 3 & 4" de la section société dans le doc source
+    if source_doc is not None:
+        _sub_heading(doc, "Analyse du risque (source rapport)")
+        risk_paras = _extract_risk_narrative(source_doc, ticker)
+        if risk_paras:
+            for txt in risk_paras[:4]:   # max 4 phrases
+                p_r = doc.add_paragraph()
+                p_r.paragraph_format.space_before = Pt(1)
+                p_r.paragraph_format.space_after  = Pt(3)
+                p_r.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+                r_r = p_r.add_run(txt)
+                r_r.font.size = Pt(9)
+        else:
+            # Fallback : synthèse financière
+            synth = _s(s, "synthese_financiere")
+            if synth and synth not in ("", "—"):
+                _narrative(doc, synth, size=9, italic=True, color="555555")
+
+
+def _extract_company_section(source_doc, ticker: str) -> tuple:
+    """
+    Localise la section individuelle d'une société dans le rapport source.
+    Retourne (start_idx, end_idx, elements_list) ou (None, None, []).
+    """
+    elements = list(source_doc.element.body.iterchildren())
+
+    def _ps(el):
+        pPr = el.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
+        return pPr.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '') if pPr is not None else ''
+    def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+
+    ticker_start = None
+    ticker_end   = None
+    # Le titre de section ressemble à "N. TICKER - TICKER - NOM SOCIÉTÉ"
+    rx = re.compile(r'^\s*\d+\.\s*' + re.escape(ticker) + r'')
+
+    for i, child in enumerate(elements):
+        if child.tag.split('}')[-1] != 'p': continue
+        s = _ps(child)
+        t = _dd(_pt(child).strip())
+        if s in ('Titre2', 'Heading2') and rx.match(t):
+            ticker_start = i
+        elif ticker_start is not None and s in ('Titre2', 'Heading2') and not rx.match(t):
+            ticker_end = i
+            break
+
+    if ticker_start is None:
+        return None, None, elements
+    return ticker_start, (ticker_end or min(ticker_start + 150, len(elements))), elements
+
+
+def _extract_risk_score_data(source_doc, ticker: str) -> dict | None:
+    """
+    Extrait les données du SCORE DE RISQUE d'une société depuis le rapport source.
+    Structure source :
+      Para  : "⚠️ SCORE DE RISQUE — 21.8/100 → Moyen"   (triplé)
+      Para  : "████░░░  21.8/100"                        (barre ASCII)
+      Table : 5 critères × 4 colonnes [Critère, Valeur, Formule, Interprétation]
+
+    Retourne dict {score_str, niveau, barre, criteres: [{nom, valeur, formule, interp}]}
+    ou None si non trouvé.
+    """
+    ticker_start, ticker_end, elements = _extract_company_section(source_doc, ticker)
+    if ticker_start is None:
+        return None
+
+    def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+    def _read_tbl(tbl_el):
+        rows = []
+        for tr in tbl_el.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
+            cells = [_dd(''.join(n.text or '' for n in tc.iter() if n.text).strip())
+                     for tc in tr.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc')]
+            if cells: rows.append(cells)
+        return rows
+
+    score_str = None
+    niveau    = None
+    barre     = None
+    criteres  = []
+
+    for i in range(ticker_start, ticker_end):
+        child = elements[i]
+        tag   = child.tag.split('}')[-1]
+        txt   = _dd(_pt(child).strip()) if tag == 'p' else ''
+
+        if tag == 'p' and 'SCORE DE RISQUE' in txt.upper():
+            # Extraire score et niveau : "⚠️ SCORE DE RISQUE — 21.8/100 → Moyen"
+            m = re.search(r'(\d+[\.,]\d+)/100\s*[→\->\s]+\s*(\w+)', txt)
+            if m:
+                score_str = m.group(1).replace(',', '.')
+                niveau    = m.group(2).strip()
+
+        elif tag == 'p' and barre is None and score_str and '░' in txt or (tag == 'p' and '█' in txt and score_str):
+            barre = txt[:60]
+
+        elif tag == 'tbl' and score_str and not criteres:
+            data = _read_tbl(child)
+            if not data or not data[0]: continue
+            h = ' '.join(data[0]).lower()
+            if 'critère' in h or 'critere' in h or 'poids' in h:
+                for row in data[1:]:
+                    if len(row) >= 2:
+                        criteres.append({
+                            'nom':    row[0][:60] if row[0] else '—',
+                            'valeur': row[1][:80] if len(row) > 1 else '—',
+                            'formule': row[2][:60] if len(row) > 2 else '—',
+                            'interp':  row[3][:80] if len(row) > 3 else '—',
+                        })
+                break   # on a trouvé le tableau critères
+
+    if score_str is None:
+        return None
+    return {'score_str': score_str, 'niveau': niveau or '—', 'barre': barre or '', 'criteres': criteres}
+
+
+def _extract_cours_commentary(source_doc, ticker: str) -> str | None:
+    """
+    Extrait le commentaire d'analyse du cours (PARTIE 1) depuis le rapport source.
+    Le texte est dans un paragraphe contenant "PARTIE 1" ou "ANALYSE DU COURS"
+    suivi du texte narratif.
+    Retourne le texte nettoyé (max 400 chars) ou None.
+    """
+    ticker_start, ticker_end, elements = _extract_company_section(source_doc, ticker)
+    if ticker_start is None:
+        return None
+
+    def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+
+    for i in range(ticker_start, ticker_end):
+        child = elements[i]
+        if child.tag.split('}')[-1] != 'p': continue
+        txt = _dd(_pt(child).strip())
+        # Détecter le paragraphe PARTIE 1 (contient le texte d'analyse du cours)
+        if ('PARTIE 1' in txt.upper() and 'COURS' in txt.upper() and len(txt) > 80):
+            # Nettoyer le texte (enlever "### **PARTIE 1 ...**" markdown)
+            clean = re.sub(r'\*{1,3}[^*]+\*{1,3}', '', txt)
+            clean = re.sub(r'#+\s*PARTIE\s+\d+[^.\n]*', '', clean)
+            clean = re.sub(r'\s{2,}', ' ', clean).strip()
+            if len(clean) > 60:
+                return clean[:400] + ('…' if len(clean) > 400 else '')
+        # Aussi détecter le paragraphe qui parle directement du cours sur 100 jours
+        if 'sur les 100 derniers jours' in txt.lower() or '100 derniers jours' in txt.lower():
+            clean = re.sub(r'\*{1,3}', '', txt).strip()
+            return clean[:400] + ('…' if len(clean) > 400 else '')
+    return None
+
+
+def _extract_risk_narrative(source_doc, ticker: str) -> list:
+    """
+    Parcourt le document source, trouve la section du ticker,
+    et extrait les phrases de risque des paragraphes narratifs
+    (PARTIE 3 Fondamentale + PARTIE 4 Conclusion).
+    Retourne une liste de phrases courtes (max 200 chars chacune).
+    """
+    ticker_start, ticker_end, elements = _extract_company_section(source_doc, ticker)
+    if ticker_start is None:
+        return []
+
+    def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+    def _ps(el):
+        pPr = el.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
+        return pPr.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val','') if pPr is not None else ''
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+
+    risk_keywords = ('risque', 'volatil', 'fragil', 'surveill', 'vigilance',
+                     'attention', 'incertitude', 'faiblesse', 'endett',
+                     'pression', 'dégradation', 'correction')
+    risk_sentences = []
+
+    for i in range(ticker_start, ticker_end):
+        child = elements[i]
+        if child.tag.split('}')[-1] != 'p': continue
+        s = _ps(child)
+        if s in ('Titre2', 'Heading2', 'Titre3', 'Heading3'): continue
+        txt = _dd(_pt(child).strip())
+        if not txt or len(txt) < 20: continue
+        if not any(k in txt.lower() for k in risk_keywords): continue
+
+        sentences = re.split(r'(?<=[.!?])\s+', txt)
+        for sent in sentences:
+            sent = re.sub(r'\*+', '', sent).strip()
+            sent = re.sub(r'#+\s*PARTIE\s+\d+[^.]*\.?', '', sent).strip()
+            if len(sent) < 30: continue
+            if not any(k in sent.lower() for k in risk_keywords): continue
+            if len(sent) > 200: sent = sent[:197] + '…'
+            if sent not in risk_sentences:
+                risk_sentences.append(sent)
+            if len(risk_sentences) >= 4: break
+        if len(risk_sentences) >= 4: break
+
+    return risk_sentences
+
+
 def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
                       period_info: dict = None,
-                      images_map: dict | None = None) -> bytes:
+                      images_map: dict | None = None,
+                      source_doc=None) -> bytes:
     """
     Assemble la fiche Word d'une société.
 
@@ -2086,11 +2448,13 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
     _add_separator(doc)
     build_market_table(doc, s)               # Métriques de marché
     _add_separator(doc)
-    build_chart_comment(doc, s, source_png)  # Graphique source Word ou matplotlib
+    build_chart_comment(doc, s, source_png)  # Graphique source Word + bandeau annoté
     _add_separator(doc)
     build_technical_analysis(doc, s)         # Analyse technique (tableau + convergence)
     _add_separator(doc)
     build_fundamental_analysis(doc, s)       # Analyse fondamentale + risques + perspectives
+    _add_separator(doc)
+    build_risques(doc, s, source_doc)        # Profil de risque (source rapport + LLM)
     _add_separator(doc)
     build_financial_analysis(doc, s)         # Analyse financière détaillée
     _add_separator(doc)
@@ -2127,18 +2491,21 @@ def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> list:
     freq_suffix = {"JOUR": "JOUR", "HEBDO": "HEBDO", "MENSUEL": "MENSUEL",
                    "TRIM": "TRIM", "ANNUEL": "ANNUEL"}.get(freq, freq)
 
-    # ── Étape 0 : extraction des images depuis le document le plus récent ─────
-    # On extrait depuis le premier document (le plus récent) qui est celui
-    # dont les graphiques correspondent aux données du jour.
+    # ── Étape 0 : extraction des images + ouverture source_doc ───────────────
+    # On ouvre le document source une seule fois pour :
+    #   - extraire les graphiques (images embarquées)
+    #   - extraire les textes de risque par société (section narrative)
     print(f"  [Fiches/{freq}] Étape 0/3 : Extraction des images du document source...")
     images_map: dict = {}
+    source_doc = None
     try:
+        from docx import Document as _DocxDocument
+        source_doc = _DocxDocument(io.BytesIO(docs_bytes[0]))
         images_map = _extract_images_from_docx(docs_bytes[0])
         print(f"  [Fiches/{freq}] {len(images_map)} graphique(s) extrait(s) : "
               f"{list(images_map.keys()) or '(aucun)'}")
     except Exception as exc:
-        print(f"  [Fiches/{freq}] AVERTISSEMENT extraction images : {exc} — "
-              "les graphiques seront reconstruits par matplotlib.")
+        print(f"  [Fiches/{freq}] AVERTISSEMENT extraction images : {exc}")
 
     # ── Étape 1 : extraction du texte ─────────────────────────────────────────
     print(f"  [Fiches/{freq}] Étape 1/3 : Extraction du texte ({len(docs_bytes)} doc(s))...")
@@ -2182,9 +2549,12 @@ def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> list:
             continue
         has_source_img = ticker.upper() in images_map
         try:
+            # Injecter le source_doc dans le dict société pour accès dans build_chart_comment
+            company["_source_doc_ref"] = source_doc
             docx_bytes = _build_fiche_docx(
                 company, date_str, freq, period_info,
                 images_map=images_map,
+                source_doc=source_doc,
             )
             filename = f"Fiche_{ticker}_{date_file}_{freq_suffix}.docx"
             results.append((filename, docx_bytes))
