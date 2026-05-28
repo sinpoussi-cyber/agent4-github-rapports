@@ -1285,46 +1285,111 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
     # ── Section commentaire ───────────────────────────────────────────────────
     _section_heading(doc, "COMMENTAIRE DE LA COURBE — ÉVOLUTION 100 JOURS")
 
-    cours = _fmt_amount(s.get("cours"))
-    var_1j = _validate_var_1j(s.get("var_1j"))
-    tendance = _s(s, "tendance_100j", "neutre")
-    volatilite = _s(s, "volatilite", "modérée")
+    # ── Données clés ──────────────────────────────────────────────────────────
+    ticker      = _s(s, "ticker", "?")
+    cours       = _to_float(s.get("cours") or s.get("cours_fin"))
+    var_1j_raw  = _validate_var_1j(s.get("var_1j"))
+    perf_100j   = _s(s, "perf_100j", "—")
+    plus_haut   = _to_float(s.get("plus_haut_100j"))
+    plus_bas    = _to_float(s.get("plus_bas_100j"))
+    tendance    = _s(s, "tendance_100j", "neutre").lower()
+    volatilite  = _s(s, "volatilite", "modérée").lower()
+    reco        = _s(s, "reco", "NEUTRE").upper()
+    score       = _score_f(s)
 
-    analyse = _s(s, "analyse_cours_100j")
-    if analyse and analyse not in ("", "—"):
-        _narrative(doc, analyse)
+    # ── Calcul distance cours actuel / plus haut et plus bas ─────────────────
+    dist_haut_str = ""
+    dist_bas_str  = ""
+    if cours and plus_haut and plus_haut > 0:
+        d = (plus_haut - cours) / plus_haut * 100
+        dist_haut_str = f"{d:.1f}% sous le plus haut"
+    if cours and plus_bas and plus_bas > 0:
+        d = (cours - plus_bas) / plus_bas * 100
+        dist_bas_str  = f"{d:.1f}% au-dessus du plus bas"
 
-    t = str(tendance).lower()
-    if "haussier" in t or "hausse" in t:
-        phase = "accumulation progressive"
-        momentum = "positif et soutenu"
-        implication = (
-            "Le titre progresse dans une structure haussière avec des corrections limitées. "
-            "Les creux successifs sont plus hauts que les précédents — signal de demande structurelle. "
-            "Le risque principal est une prise de bénéfices après extension rapide."
-        )
-    elif "baissier" in t or "baisse" in t:
-        phase = "correction / distribution"
-        momentum = "négatif et persistant"
-        implication = (
-            "Le titre est en phase de distribution : les vendeurs dominent les acheteurs. "
-            "Chaque rebond technique est suivi d'un nouveau plus bas — structure baissière intacte. "
-            "Un signal de retournement confirmé est nécessaire avant tout renforcement."
-        )
+    # ── Signal dominant ───────────────────────────────────────────────────────
+    signals = [s.get(k) or "" for k in ("mm", "boll", "macd", "rsi", "stoch")]
+    nb_pos = sum(1 for sg in signals if any(
+        w in str(sg).lower() for w in ("haussier", "positif", "achat")))
+    nb_neg = sum(1 for sg in signals if any(
+        w in str(sg).lower() for w in ("baissier", "négatif", "vente")))
+
+    if nb_pos >= 3:
+        signal_label = "convergence haussière"
+        signal_fg    = "0F9D58"
+        signal_bg    = "EBF7EE"
+    elif nb_neg >= 3:
+        signal_label = "convergence baissière"
+        signal_fg    = "D93025"
+        signal_bg    = "FDEEEE"
     else:
-        phase = "consolidation latérale"
-        momentum = "neutre — sans direction"
-        implication = (
-            "Le titre évolue en range horizontal. "
-            "Cette phase d'équilibre entre acheteurs et vendeurs précède souvent une rupture directionnelle. "
-            "Surveiller le franchissement en clôture des bornes du range pour identifier le prochain mouvement."
-        )
+        signal_label = "signaux mixtes"
+        signal_fg    = "E37400"
+        signal_bg    = "FFF8E6"
 
-    _narrative(doc,
-               f"Phase de marché : {phase}. Momentum : {momentum}. "
-               f"Volatilité sur la période : {volatilite}. "
-               f"Cours actuel : {cours} FCFA — variation séance : {var_1j}.")
-    _narrative(doc, implication)
+    # ── Phrase de tendance (1 ligne max) ──────────────────────────────────────
+    if "haussier" in tendance or "hausse" in tendance:
+        tendance_phrase = "Structure haussière — creux ascendants confirmés."
+    elif "baissier" in tendance or "baisse" in tendance:
+        tendance_phrase = "Structure baissière — rebonds sans suivi vendus."
+    else:
+        tendance_phrase = "Range horizontal — rupture directionnelle à surveiller."
+
+    # ── Tableau synthèse compact ──────────────────────────────────────────────
+    tbl = doc.add_table(rows=2, cols=5)
+    tbl.style = "Table Grid"
+    headers = ["Perf. 100j", "Var. séance", "Distance plus haut", "Distance plus bas", "Volatilité"]
+    values  = [
+        perf_100j,
+        var_1j_raw if var_1j_raw != "—" else "—",
+        dist_haut_str or "—",
+        dist_bas_str  or "—",
+        volatilite.capitalize(),
+    ]
+    for i, (h, v) in enumerate(zip(headers, values)):
+        _cw(tbl.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
+        # Colorer la perf selon signe
+        bg = "FFFFFF"
+        if i == 0:
+            if perf_100j.startswith("+"):  bg = "EBF7EE"
+            elif perf_100j.startswith("-"): bg = "FDEEEE"
+        _cw(tbl.rows[1].cells[i], v, size=9, bg=bg)
+    doc.add_paragraph()
+
+    # ── Ligne de synthèse (1-2 phrases max) ──────────────────────────────────
+    cours_str = f"{cours:,.0f}".replace(",", " ") if cours else "—"
+    ph_str    = f"{plus_haut:,.0f}".replace(",", " ") if plus_haut else "—"
+    pb_str    = f"{plus_bas:,.0f}".replace(",", " ") if plus_bas else "—"
+
+    synthese = (
+        f"{ticker} cote à {cours_str} FCFA (perf. 100j : {perf_100j}). "
+        f"Plus haut : {ph_str} — Plus bas : {pb_str}. "
+        f"{tendance_phrase} "
+        f"Indicateurs techniques : {signal_label} ({nb_pos}/5 positifs, {nb_neg}/5 négatifs)."
+    )
+    p_synth = doc.add_paragraph()
+    p_synth.paragraph_format.space_before = Pt(0)
+    p_synth.paragraph_format.space_after = Pt(4)
+    p_synth.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    r_synth = p_synth.add_run(synthese)
+    r_synth.font.size = Pt(9)
+
+    # ── Bloc signal coloré (1 ligne) ──────────────────────────────────────────
+    tbl2 = doc.add_table(rows=1, cols=1)
+    tbl2.style = "Table Grid"
+    cell2 = tbl2.rows[0].cells[0]
+    _cell_bg(cell2, signal_bg)
+    tcPr = cell2._tc.get_or_add_tcPr()
+    tcMar = OxmlElement("w:tcMar")
+    for side in ("top","bottom","left","right"):
+        em = OxmlElement(f"w:{side}"); em.set(qn("w:w"),"80"); em.set(qn("w:type"),"dxa"); tcMar.append(em)
+    tcPr.append(tcMar)
+    p2 = cell2.paragraphs[0]
+    p2.paragraph_format.space_before = Pt(0)
+    p2.paragraph_format.space_after = Pt(0)
+    r2 = p2.add_run(f"Signal dominant : {signal_label.upper()}  |  Recommandation : {reco}  |  Score : {score:.0f}/100")
+    r2.bold = True; r2.font.size = Pt(9); r2.font.color.rgb = _rgb(signal_fg)
+    sp = doc.add_paragraph(); sp.paragraph_format.space_after = Pt(2)
 
 
 def _fmt_num(v, decimals: int = 1) -> str:
