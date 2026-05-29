@@ -28,8 +28,8 @@ MODELS = {
     "mistral":   "mistral-large-latest",
 }
 
-# Ordre de priorité (cascade)
-PROVIDER_ORDER = ["anthropic", "gemini", "deepseek", "mistral"]
+# Ordre de priorité (cascade) : Gemini → DeepSeek → Mistral → Claude (dernier recours)
+PROVIDER_ORDER = ["gemini", "deepseek", "mistral", "anthropic"]
 
 _ENV_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",
