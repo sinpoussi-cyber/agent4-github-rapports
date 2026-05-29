@@ -2573,6 +2573,129 @@ def _dedup_text(s: str) -> str:
 
 # ── Point d'entrée ────────────────────────────────────────────────────────────
 
+def _build_docx(data: dict, source_doc, source_buckets: dict, date_str: str) -> bytes:
+    """
+    Construit le document Word complet de la Note Stratégique BRVM.
+
+    Appelle chaque _section_* dans l'ordre logique du document,
+    en ne produisant que les sections effectivement présentes dans le
+    rapport source (source_buckets).  Les sections absentes sont silencieusement
+    ignorées plutôt que de bloquer la génération.
+
+    Paramètres
+    ----------
+    data         : dict contenant optionnellement _period_info et _freq
+    source_doc   : Document python-docx du rapport source
+    source_buckets : dict section_key -> list[blocks]
+    date_str     : date du jour au format JJ/MM/AAAA
+
+    Retourne bytes (.docx)
+    """
+    from docx import Document as _Document
+    from docx.shared import Cm
+
+    doc = _Document()
+
+    # ── Marges page (A4 étroit) ───────────────────────────────────────────────
+    for section in doc.sections:
+        section.page_width  = int(21.0 * 914400 / 25.4)   # 21 cm
+        section.page_height = int(29.7 * 914400 / 25.4)   # 29.7 cm
+        section.left_margin   = Cm(1.8)
+        section.right_margin  = Cm(1.8)
+        section.top_margin    = Cm(1.8)
+        section.bottom_margin = Cm(1.8)
+
+    # ── En-tête & pied de page ────────────────────────────────────────────────
+    _setup_header_footer(doc, date_str)
+
+    # ── Section 1 — En-tête institutionnel ───────────────────────────────────
+    _section_entete(doc, data, date_str)
+
+    # ── Section 2 — Synthèse générale ────────────────────────────────────────
+    if source_buckets.get("synthese"):
+        try:
+            _section_synthese_generale(doc, source_buckets, source_doc)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] synthese: %s", exc)
+
+    # ── Section 3 — Analyse sectorielle ──────────────────────────────────────
+    if source_buckets.get("secteurs"):
+        try:
+            _section_secteurs(doc, source_buckets, source_doc)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] secteurs: %s", exc)
+
+    # ── Section 4 — Analyse financière comparative ───────────────────────────
+    if source_buckets.get("analyse_financiere"):
+        try:
+            _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] analyse_financiere: %s", exc)
+
+    # ── Section 5 — Liquidité ─────────────────────────────────────────────────
+    if source_buckets.get("liquidite"):
+        try:
+            _section_liquidite(doc, source_buckets, source_doc)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] liquidite: %s", exc)
+
+    # ── Section 6 — Matrice des risques ──────────────────────────────────────
+    if source_buckets.get("recap_risques") or source_buckets.get("matrice_risque"):
+        try:
+            _section_matrice_risque(doc, source_buckets, source_doc)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] matrice_risque: %s", exc)
+
+    # ── Section 7 — Macro-économie ────────────────────────────────────────────
+    if any(source_buckets.get(k) for k in ("macro", "macro_actu", "macro_pol",
+                                            "macro_fin", "macro_synth")):
+        try:
+            _section_macro(doc, source_buckets, source_doc)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] macro: %s", exc)
+
+    # ── Section 8 — Actualités ────────────────────────────────────────────────
+    if source_buckets.get("actualites"):
+        try:
+            _section_actualites(doc, source_buckets, source_doc)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] actualites: %s", exc)
+
+    # ── Section 9 — Classement des 47 sociétés ────────────────────────────────
+    if source_buckets.get("classement"):
+        try:
+            _section_classement(doc, source_buckets, source_doc)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] classement: %s", exc)
+
+    # ── Section 10 — Portefeuilles ────────────────────────────────────────────
+    if source_buckets.get("portefeuilles"):
+        try:
+            _section_portefeuilles(doc, source_buckets, source_doc)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] portefeuilles: %s", exc)
+
+    # ── Section 11 — Alertes ──────────────────────────────────────────────────
+    if source_buckets.get("alertes"):
+        try:
+            _section_alertes(doc, source_buckets, source_doc)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] alertes: %s", exc)
+
+    # ── Section 12 — Prédictions IA ───────────────────────────────────────────
+    if source_buckets.get("predictions"):
+        try:
+            _section_predictions_ia(doc, source_doc, source_buckets)
+        except Exception as exc:
+            logger.warning("[Note/_build_docx] predictions: %s", exc)
+
+    # ── Sauvegarde en bytes ───────────────────────────────────────────────────
+    import io as _io
+    buf = _io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> tuple:
     """
     Génère la Note Stratégique BRVM depuis un ou plusieurs .docx source.
