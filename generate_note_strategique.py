@@ -7,6 +7,7 @@ from datetime import date
 
 logger = logging.getLogger(__name__)
 
+import anthropic
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -15,8 +16,6 @@ from docx.shared import Cm, Pt, RGBColor
 from dotenv import load_dotenv
 
 load_dotenv()
-
-from llm_client import call_json  # noqa: E402 — après load_dotenv pour que .env soit chargé
 
 _DESTINATAIRE = (
     "À l'attention de Madame Corinne Houmou ORMON\n"
@@ -616,6 +615,7 @@ def _build_context(docs_bytes: list, freq: str) -> str:
 # ── Extraction structurée via Claude ─────────────────────────────────────────
 
 def _extract_data_with_claude(full_text: str, freq: str = "JOUR", period_info: dict = None) -> dict:
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     text = full_text[:40000]
 
     _period_descs = {
@@ -740,10 +740,19 @@ FORMAT JSON ATTENDU :
   "recommandation_finale": "Le marché présente..."
 }}"""
 
+    message = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = message.content[0].text.strip()
+    start = raw.find("{")
+    end = raw.rfind("}") + 1
+    if start == -1 or end == 0:
+        return {}
     try:
-        return call_json(prompt, max_tokens=4096)
-    except Exception as exc:
-        logger.warning("[Note] Extraction LLM échouée : %s", exc)
+        return json.loads(raw[start:end])
+    except json.JSONDecodeError:
         return {}
 
 
@@ -1166,112 +1175,10 @@ def _section_liquidite(doc, source_buckets, source_doc):
 
 # ── Section 5 — Analyse macro ────────────────────────────────────────────────
 
-_SECTOR_KEYWORDS = {
-    "bancaire":   ["banque", "bancaire", "crédit", "taux", "monétaire", "bceao",
-                   "interbancaire", "liquidité", "dépôt", "prêt"],
-    "agricole":   ["cacao", "café", "hévéa", "palmier", "coton", "sucre",
-                   "agricole", "récolte", "matière première"],
-    "énergie":    ["pétrole", "énergie", "hydrocarbure", "carburant", "gaz",
-                   "électricité", "renouvelable"],
-    "télécoms":   ["télécom", "mobile", "internet", "réseau", "opérateur",
-                   "connectivité", "numérique"],
-    "industrie":  ["industrie", "production", "manufacture", "construction",
-                   "bâtiment", "infrastructure"],
-}
-
-# Mapping secteur → (label_affiché, [(ticker, nom_court), ...])
-# Utilisé dans _section_actualites pour lister les sociétés concernées par une actualité.
-_BRVM_SECTOR_TICKERS = {
-    "bancaire": (
-        "Banques & Services financiers",
-        [
-            ("BOAC",  "BOA Côte d'Ivoire"),
-            ("BOAB",  "BOA Bénin"),
-            ("BOABF", "BOA Burkina Faso"),
-            ("BOAM",  "BOA Mali"),
-            ("BOAN",  "BOA Niger"),
-            ("BOAS",  "BOA Sénégal"),
-            ("SGBC",  "Société Générale Burkina Faso"),
-            ("SIBC",  "SIB Côte d'Ivoire"),
-            ("BICB",  "BIC Burkina Faso"),
-            ("BICC",  "BICI Côte d'Ivoire"),
-            ("BNBC",  "BNI Côte d'Ivoire"),
-            ("CBIBF", "Coris Bank Burkina Faso"),
-            ("NSBC",  "NSIA Banque CI"),
-            ("SMBC",  "SMB CI"),
-            ("SLBC",  "SLB CI"),
-            ("ETIT",  "Ecobank Transnational"),
-            ("ECOC",  "Ecobank CI"),
-            ("LNBB",  "La Nationale des Banques BF"),
-            ("CABC",  "CAB CI"),
-            ("SNTS",  "Société Nationale des Transports"),
-        ],
-    ),
-    "agricole": (
-        "Agriculture & Agroalimentaire",
-        [
-            ("PALC",  "PALMCI"),
-            ("SOGC",  "SOGB"),
-            ("CFAC",  "CFAO"),
-            ("SAFC",  "SAF-CACAO"),
-            ("SCRC",  "SCR CI"),
-            ("SICC",  "SIC CI"),
-            ("UNLC",  "UNIL CI"),
-            ("NEIC",  "NEI CI"),
-        ],
-    ),
-    "énergie": (
-        "Énergie & Services publics",
-        [
-            ("CIEC",  "CIE CI"),
-            ("ONTBF", "ONT BF"),
-            ("SHEC",  "SHE CI"),
-            ("SPHC",  "SPH CI"),
-            ("STAC",  "SETAO CI"),
-        ],
-    ),
-    "télécoms": (
-        "Télécommunications",
-        [
-            ("ORAC",  "Orange CI"),
-            ("ORGT",  "ONATEL BF"),
-        ],
-    ),
-    "industrie": (
-        "Industrie & Distribution",
-        [
-            ("BICC",  "BICI CI"),
-            ("SDCC",  "SDC CI"),
-            ("SDSC",  "SDS CI"),
-            ("SEMC",  "SEMCO CI"),
-            ("SIVC",  "SIV CI"),
-            ("STBC",  "STB CI"),
-            ("TTLC",  "TTL CI"),
-            ("TTLS",  "TTLS"),
-            ("NTLC",  "NTL CI"),
-            ("FTSC",  "FILTISAC CI"),
-            ("PRSC",  "PRS CI"),
-            ("UNXC",  "UNX CI"),
-            ("ABJC",  "SERVAIR ABIDJAN CI"),
-            ("ORGT",  "ONATEL BF"),
-        ],
-    ),
-}
-
-_IMPACT_POS_KW = (
-    "positif", "favorable", "hausse", "soutien", "croissance", "bénéfique",
-    "opportunité", "dynamisme", "progression", "rebond", "amélioration",
-)
-_IMPACT_NEG_KW = (
-    "négatif", "negatif", "baisse", "pression", "risque", "fragilise",
-    "pénalise", "incertitude", "ralentissement", "tension", "sorties",
-    "chute", "recul", "défaut", "sanction", "fermeture", "grève",
-    "dégradation", "contraction", "litige", "suspension", "report",
-)
-
 _MACRO_DROP_RX = re.compile(
     r"(?i)(données insuffisantes|aucune information|absolument\.|^---$)"
 )
+
 
 
 def _section_macro(doc, source_buckets, source_doc):
@@ -1491,6 +1398,129 @@ def _section_macro(doc, source_buckets, source_doc):
                 continue
             _para(doc, txt)
 
+
+
+_BRVM_SECTOR_TICKERS = {
+    "bancaire": ("Banque", [
+        ("BOAB", "BOA Burkina"), ("BOAC", "BOA Côte d'Ivoire"),
+        ("BOAM", "BOA Mali"), ("BOAN", "BOA Niger"), ("BOAS", "BOA Sénégal"),
+        ("SGBC", "SGBCI"), ("BICB", "BICI Bénin"), ("BICC", "BICI CI"),
+        ("NSBC", "NSIA Banque CI"), ("SIBC", "SIB"), ("CBIBF", "Coris Bank Burkina"),
+    ]),
+    "agricole": ("Agroalimentaire", [
+        ("SOGC", "SOGB"), ("SPHC", "SAPH"), ("PALC", "PALMCI"),
+        ("SCRC", "SUCRIVOIRE"), ("STBC", "SITAB"), ("SLBC", "SOLIBRA"),
+    ]),
+    "énergie": ("Énergie & Distribution", [
+        ("SHEC", "Vivo Energy CI"), ("SMBC", "SMB"), ("TTLC", "Total CI"),
+        ("TTLS", "Total Sénégal"), ("SIVC", "SIVOA"),
+    ]),
+    "télécoms": ("Télécoms", [
+        ("SNTS", "Sonatel"), ("ORAC", "Orange CI"), ("ONTBF", "Onatel BF"),
+    ]),
+    "industrie": ("Industrie", [
+        ("CABC", "CABC"), ("FTSC", "Filtisac"), ("SDSC", "SODE CI"),
+        ("SEMC", "SEMC"), ("STAC", "STA CI"),
+    ]),
+}
+
+_SECTOR_KEYWORDS = {
+    "bancaire": (
+        "banque", "bancaire", "crédit", "bceao", "monétaire", "taux directeur",
+        "refinancement", "liquidité bancaire", "boa ", "sgbci", "bici", "nsia",
+        "coris", "ecobank", "sib ",
+    ),
+    "agricole": (
+        "agricole", "agriculture", "cacao", "café", "coton", "hévéa", "caoutchouc",
+        "palmier", "huile de palme", "sucre", "récolte", "campagne",
+        "sogb", "saph", "palmci", "sucrivoire", "sitab", "solibra",
+    ),
+    "énergie": (
+        "pétrole", "essence", "carburant", "hydrocarbure", "gaz", "raffinerie",
+        "électricité", "énergie", "kwh", "barils", "brent", "shell", "total",
+        "vivo energy",
+    ),
+    "télécoms": (
+        "télécom", "telecom", "mobile money", "internet", "artci", "artp",
+        "fibre", "5g", "4g", "sonatel", "orange ", "onatel", "moov",
+    ),
+    "industrie": (
+        "industrie", "ciment", "usine", "production industrielle", "manufacture",
+        "cimenterie", "filtisac", "sode", "fabrication",
+    ),
+}
+
+_IMPACT_POS_KW = (
+    "hausse", "croissance", "record", "succès", "bénéfice", "dividende",
+    "investissement", "expansion", "augmentation", "amélioration", "positif",
+    "accord", "signature", "rebond", "performance", "progression", "gain",
+    "renforcement", "levée de fonds", "obligataire réussi", "souscription",
+)
+_IMPACT_NEG_KW = (
+    "baisse", "perte", "déficit", "crise", "chute", "recul", "défaut",
+    "sanction", "fermeture", "grève", "négatif", "alerte", "risque",
+    "dégradation", "contraction", "ralentissement", "tension", "litige",
+    "suspension", "report",
+)
+
+
+def _detect_brvm_sector(text: str):
+    t = (text or "").lower()
+    for key, keywords in _SECTOR_KEYWORDS.items():
+        if any(kw in t for kw in keywords):
+            return key
+    return None
+
+
+def _assess_brvm_impact(text: str) -> str:
+    t = (text or "").lower()
+    pos = sum(1 for k in _IMPACT_POS_KW if k in t)
+    neg = sum(1 for k in _IMPACT_NEG_KW if k in t)
+    if pos > neg:
+        return "Positif"
+    if neg > pos:
+        return "Négatif"
+    return "Neutre"
+
+
+def _brvm_impact_explanation(sector_key, impact: str) -> str:
+    sense = {
+        "Positif": "favoriser",
+        "Négatif": "peser sur",
+        "Neutre": "influencer",
+    }.get(impact, "influencer")
+    sector_phrases = {
+        "bancaire": (
+            f"Une évolution du contexte bancaire et monétaire est susceptible de "
+            f"{sense} les revenus d'intérêts, le coût du risque et la valorisation "
+            f"des banques cotées à la BRVM."
+        ),
+        "agricole": (
+            f"Les conditions de marché des matières premières agricoles peuvent "
+            f"{sense} les revenus des producteurs cotés (cacao, hévéa, palmier, "
+            f"sucre) et leur capacité à distribuer un dividende."
+        ),
+        "énergie": (
+            f"L'évolution des prix de l'énergie et des hydrocarbures tend à "
+            f"{sense} les marges des distributeurs et la consommation des ménages."
+        ),
+        "télécoms": (
+            f"Les décisions réglementaires ou commerciales du secteur télécoms "
+            f"peuvent {sense} l'ARPU, les investissements réseau et la rentabilité "
+            f"des opérateurs cotés."
+        ),
+        "industrie": (
+            f"Les dynamiques de production industrielle peuvent {sense} les "
+            f"volumes, les marges et les carnets de commandes des industriels cotés."
+        ),
+    }
+    if sector_key in sector_phrases:
+        return sector_phrases[sector_key]
+    return (
+        "Une actualité d'ordre macroéconomique influence le sentiment global des "
+        "investisseurs, la liquidité du marché et peut " + sense +
+        " l'ensemble des compartiments de la cote BRVM."
+    )
 
 def _detect_brvm_sector(text: str):
     t = (text or "").lower()
@@ -1909,93 +1939,6 @@ def _aggregate_predictions_by_horizon(tables):
         niveau = f"{avg:+.2f}% (moyenne)"
         out[h] = (tendance, niveau, confiance)
     return out
-
-
-def _dedup_cell(s: str) -> str:
-    """Déduplique une cellule triplée 'XYZXYZXYZ' → 'XYZ'."""
-    n = len(s)
-    for div in (3, 2):
-        if n % div == 0:
-            part = s[: n // div]
-            if s == part * div:
-                return part
-    return s
-
-
-def _parse_brvm_price(raw: str):
-    """Parse un prix BRVM depuis une cellule triplée. Virgule = sep. milliers FR."""
-    s = _dedup_cell(raw).strip().replace(" ", "").replace("\u00a0", "").replace(",", "")
-    try:
-        return float(s)
-    except ValueError:
-        return None
-
-
-def _scan_j10_per_ticker(source_doc) -> list:
-    """Extrait les prédictions J+10 de chaque société cotée."""
-    body = source_doc.element.body
-    elements = list(body.iterchildren())
-    rx_ticker = re.compile(r"^\s*\d+\.\s*([A-Z]{2,6})\s*[-\u2014]")
-    rx_var = re.compile(r"([+\-]?\d+(?:[.,]\d+)?)\s*%")
-    current_ticker = None
-    results = []
-    seen_tickers = set()
-
-    for i, child in enumerate(elements):
-        tag = child.tag.split("}")[-1]
-        if tag == "p":
-            style = _para_style(child)
-            raw = _para_text(child).strip()
-            txt = _dedup_cell(raw)
-            if style in ("Titre2", "Heading2"):
-                m = rx_ticker.match(txt)
-                if m:
-                    current_ticker = m.group(1)
-        elif tag == "tbl" and current_ticker:
-            data = _read_source_tbl_data(child)
-            if not data or not data[0]:
-                continue
-            header = " ".join(_dedup_cell(c) for c in data[0])
-            if "Prix" not in header:
-                continue
-            first_col = " ".join(_dedup_cell(r[0]) for r in data[1:] if r)
-            if "J+" not in first_col:
-                continue
-            j10_row = None
-            for row in data[1:]:
-                if not row:
-                    continue
-                horizon = _dedup_cell(row[0]).strip()
-                if horizon.startswith("J+10") and j10_row is None:
-                    j10_row = row
-            if j10_row is None or len(j10_row) < 5:
-                continue
-            try:
-                prix_j10  = _parse_brvm_price(j10_row[3])
-                borne_bas = _parse_brvm_price(j10_row[2])
-                borne_haut = _parse_brvm_price(j10_row[4])
-                var_raw = _dedup_cell(j10_row[5] if len(j10_row) > 5 else j10_row[-1])
-                m_var = rx_var.search(var_raw)
-                var_j10 = float(m_var.group(1).replace(",", ".")) if m_var else None
-                if prix_j10 is None or var_j10 is None:
-                    continue
-                cours_actuel = round(prix_j10 / (1 + var_j10 / 100)) if var_j10 != -100 else None
-                if current_ticker not in seen_tickers:
-                    seen_tickers.add(current_ticker)
-                    results.append({
-                        "ticker": current_ticker, "cours_actuel": cours_actuel,
-                        "prix_j10": prix_j10, "var_j10": var_j10,
-                        "borne_bas": borne_bas, "borne_haut": borne_haut,
-                    })
-            except (ValueError, ZeroDivisionError, IndexError):
-                pass
-    return results
-
-
-def _fmt_prix(v) -> str:
-    if v is None:
-        return "—"
-    return f"{v:,.0f}".replace(",", " ")
 
 
 def _section_predictions_ia(doc, source_doc, source_buckets):
@@ -2453,6 +2396,141 @@ def _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets):
 
 # ── Build complet ─────────────────────────────────────────────────────────────
 
+def _dedup_cell(s: str) -> str:
+    """Déduplique une cellule triplée 'XYZXYZXYZ' → 'XYZ'."""
+    n = len(s)
+    for div in (3, 2):
+        if n % div == 0:
+            part = s[: n // div]
+            if s == part * div:
+                return part
+    return s
+
+
+
+def _parse_brvm_price(raw: str):
+    """Parse un prix BRVM depuis une cellule triplée. Virgule = sep. milliers FR."""
+    s = _dedup_cell(raw).strip().replace(" ", "").replace("\u00a0", "").replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+
+def _scan_j10_per_ticker(source_doc) -> list:
+    """Extrait les prédictions J+10 de chaque société cotée."""
+    body = source_doc.element.body
+    elements = list(body.iterchildren())
+    rx_ticker = re.compile(r"^\s*\d+\.\s*([A-Z]{2,6})\s*[-\u2014]")
+    rx_var = re.compile(r"([+\-]?\d+(?:[.,]\d+)?)\s*%")
+    current_ticker = None
+    results = []
+    seen_tickers = set()
+
+    for i, child in enumerate(elements):
+        tag = child.tag.split("}")[-1]
+        if tag == "p":
+            style = _para_style(child)
+            raw = _para_text(child).strip()
+            txt = _dedup_cell(raw)
+            if style in ("Titre2", "Heading2"):
+                m = rx_ticker.match(txt)
+                if m:
+                    current_ticker = m.group(1)
+        elif tag == "tbl" and current_ticker:
+            data = _read_source_tbl_data(child)
+            if not data or not data[0]:
+                continue
+            header = " ".join(_dedup_cell(c) for c in data[0])
+            if "Prix" not in header:
+                continue
+            first_col = " ".join(_dedup_cell(r[0]) for r in data[1:] if r)
+            if "J+" not in first_col:
+                continue
+            j10_row = None
+            for row in data[1:]:
+                if not row:
+                    continue
+                horizon = _dedup_cell(row[0]).strip()
+                if horizon.startswith("J+10") and j10_row is None:
+                    j10_row = row
+            if j10_row is None or len(j10_row) < 5:
+                continue
+            try:
+                prix_j10  = _parse_brvm_price(j10_row[3])
+                borne_bas = _parse_brvm_price(j10_row[2])
+                borne_haut = _parse_brvm_price(j10_row[4])
+                var_raw = _dedup_cell(j10_row[5] if len(j10_row) > 5 else j10_row[-1])
+                m_var = rx_var.search(var_raw)
+                var_j10 = float(m_var.group(1).replace(",", ".")) if m_var else None
+                if prix_j10 is None or var_j10 is None:
+                    continue
+                cours_actuel = round(prix_j10 / (1 + var_j10 / 100)) if var_j10 != -100 else None
+                if current_ticker not in seen_tickers:
+                    seen_tickers.add(current_ticker)
+                    results.append({
+                        "ticker": current_ticker, "cours_actuel": cours_actuel,
+                        "prix_j10": prix_j10, "var_j10": var_j10,
+                        "borne_bas": borne_bas, "borne_haut": borne_haut,
+                    })
+            except (ValueError, ZeroDivisionError, IndexError):
+                pass
+    return results
+
+
+
+def _fmt_prix(v) -> str:
+    if v is None:
+        return "—"
+    return f"{v:,.0f}".replace(",", " ")
+
+
+
+def _dedup_text(s: str) -> str:
+    """Déduplique un texte triplé 'XYZXYZXYZ' → 'XYZ'."""
+    n = len(s)
+    for d in (3, 2):
+        if n % d == 0:
+            p = s[:n // d]
+            if s == p * d:
+                return p
+    return s
+
+
+
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width = Cm(21)
+    section.page_height = Cm(29.7)
+    section.top_margin = Cm(2.0)
+    section.bottom_margin = Cm(1.8)
+    section.left_margin = Cm(2.0)
+    section.right_margin = Cm(2.0)
+
+    _setup_header_footer(doc, date_str)
+
+    _section_entete(doc, data, date_str)                            # 1 — En-tête institutionnel
+    _section_synthese_generale(doc, source_buckets, source_doc)     # 2 — Synthèse + 2 graphiques
+    _section_secteurs(doc, source_buckets, source_doc)              # 3 — Analyse par secteur
+    _section_liquidite(doc, source_buckets, source_doc)             # 4 — Liquidité + 2 histogrammes
+    _section_macro(doc, source_buckets, source_doc)                 # 5 — Macro condensé
+    _section_matrice_risque(doc, source_buckets, source_doc)        # 6 — Récapitulatif risques
+    _section_actualites(doc, source_buckets, source_doc)            # 7 — Actualités résumé
+    _section_classement(doc, source_buckets, source_doc)            # 8 — Classement /100
+    _section_portefeuilles(doc, source_buckets, source_doc)         # 9 — 3 portefeuilles
+    _section_alertes(doc, source_buckets, source_doc)               # 10 — Alertes du jour
+    _section_predictions_ia(doc, source_doc, source_buckets)        # 11 — Prédictions IA (J+1 → J+10)
+    _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets)  # 12 — Analyse financière sectorielle
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+# ── Point d'entrée ────────────────────────────────────────────────────────────
+
+
 def _section_matrice_risque(doc, source_buckets, source_doc):
     """
     Section Risques — RÉCAPITULATIF DES RISQUES — TOUTES LES SOCIÉTÉS.
@@ -2530,18 +2608,8 @@ def _section_matrice_risque(doc, source_buckets, source_doc):
             doc.add_paragraph()
 
 
-def _dedup_text(s: str) -> str:
-    """Déduplique un texte triplé 'XYZXYZXYZ' → 'XYZ'."""
-    n = len(s)
-    for d in (3, 2):
-        if n % d == 0:
-            p = s[:n // d]
-            if s == p * d:
-                return p
-    return s
 
-
-
+def _build_docx(data: dict, source_doc, source_buckets: dict, date_str: str) -> bytes:
     doc = Document()
     section = doc.sections[0]
     section.page_width = Cm(21)
@@ -2572,129 +2640,6 @@ def _dedup_text(s: str) -> str:
 
 
 # ── Point d'entrée ────────────────────────────────────────────────────────────
-
-def _build_docx(data: dict, source_doc, source_buckets: dict, date_str: str) -> bytes:
-    """
-    Construit le document Word complet de la Note Stratégique BRVM.
-
-    Appelle chaque _section_* dans l'ordre logique du document,
-    en ne produisant que les sections effectivement présentes dans le
-    rapport source (source_buckets).  Les sections absentes sont silencieusement
-    ignorées plutôt que de bloquer la génération.
-
-    Paramètres
-    ----------
-    data         : dict contenant optionnellement _period_info et _freq
-    source_doc   : Document python-docx du rapport source
-    source_buckets : dict section_key -> list[blocks]
-    date_str     : date du jour au format JJ/MM/AAAA
-
-    Retourne bytes (.docx)
-    """
-    from docx import Document as _Document
-    from docx.shared import Cm
-
-    doc = _Document()
-
-    # ── Marges page (A4 étroit) ───────────────────────────────────────────────
-    for section in doc.sections:
-        section.page_width  = int(21.0 * 914400 / 25.4)   # 21 cm
-        section.page_height = int(29.7 * 914400 / 25.4)   # 29.7 cm
-        section.left_margin   = Cm(1.8)
-        section.right_margin  = Cm(1.8)
-        section.top_margin    = Cm(1.8)
-        section.bottom_margin = Cm(1.8)
-
-    # ── En-tête & pied de page ────────────────────────────────────────────────
-    _setup_header_footer(doc, date_str)
-
-    # ── Section 1 — En-tête institutionnel ───────────────────────────────────
-    _section_entete(doc, data, date_str)
-
-    # ── Section 2 — Synthèse générale ────────────────────────────────────────
-    if source_buckets.get("synthese"):
-        try:
-            _section_synthese_generale(doc, source_buckets, source_doc)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] synthese: %s", exc)
-
-    # ── Section 3 — Analyse sectorielle ──────────────────────────────────────
-    if source_buckets.get("secteurs"):
-        try:
-            _section_secteurs(doc, source_buckets, source_doc)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] secteurs: %s", exc)
-
-    # ── Section 4 — Analyse financière comparative ───────────────────────────
-    if source_buckets.get("analyse_financiere"):
-        try:
-            _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] analyse_financiere: %s", exc)
-
-    # ── Section 5 — Liquidité ─────────────────────────────────────────────────
-    if source_buckets.get("liquidite"):
-        try:
-            _section_liquidite(doc, source_buckets, source_doc)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] liquidite: %s", exc)
-
-    # ── Section 6 — Matrice des risques ──────────────────────────────────────
-    if source_buckets.get("recap_risques") or source_buckets.get("matrice_risque"):
-        try:
-            _section_matrice_risque(doc, source_buckets, source_doc)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] matrice_risque: %s", exc)
-
-    # ── Section 7 — Macro-économie ────────────────────────────────────────────
-    if any(source_buckets.get(k) for k in ("macro", "macro_actu", "macro_pol",
-                                            "macro_fin", "macro_synth")):
-        try:
-            _section_macro(doc, source_buckets, source_doc)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] macro: %s", exc)
-
-    # ── Section 8 — Actualités ────────────────────────────────────────────────
-    if source_buckets.get("actualites"):
-        try:
-            _section_actualites(doc, source_buckets, source_doc)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] actualites: %s", exc)
-
-    # ── Section 9 — Classement des 47 sociétés ────────────────────────────────
-    if source_buckets.get("classement"):
-        try:
-            _section_classement(doc, source_buckets, source_doc)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] classement: %s", exc)
-
-    # ── Section 10 — Portefeuilles ────────────────────────────────────────────
-    if source_buckets.get("portefeuilles"):
-        try:
-            _section_portefeuilles(doc, source_buckets, source_doc)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] portefeuilles: %s", exc)
-
-    # ── Section 11 — Alertes ──────────────────────────────────────────────────
-    if source_buckets.get("alertes"):
-        try:
-            _section_alertes(doc, source_buckets, source_doc)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] alertes: %s", exc)
-
-    # ── Section 12 — Prédictions IA ───────────────────────────────────────────
-    if source_buckets.get("predictions"):
-        try:
-            _section_predictions_ia(doc, source_doc, source_buckets)
-        except Exception as exc:
-            logger.warning("[Note/_build_docx] predictions: %s", exc)
-
-    # ── Sauvegarde en bytes ───────────────────────────────────────────────────
-    import io as _io
-    buf = _io.BytesIO()
-    doc.save(buf)
-    return buf.getvalue()
-
 
 def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> tuple:
     """
