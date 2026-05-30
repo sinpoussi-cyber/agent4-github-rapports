@@ -1548,6 +1548,20 @@ def build_technical_analysis(doc, s: dict):
 
     _key_bloc(doc, f"SYNTHÈSE TECHNIQUE — {conv_label} :", conv_text, conv_bg, conv_fg)
 
+    # ── PARTIE 2 : Analyse technique détaillée (depuis rapport source) ─────────
+    _src_doc2 = s.get("_source_doc_ref")
+    if _src_doc2 is not None:
+        _ticker2 = _s(s, "ticker", "?")
+        parties2 = _extract_parties(_src_doc2, _ticker2)
+        if parties2.get('p2'):
+            _sub_heading(doc, "PARTIE 2 — Analyse technique détaillée (source rapport)")
+            p_p2 = doc.add_paragraph()
+            p_p2.paragraph_format.space_before = Pt(2)
+            p_p2.paragraph_format.space_after  = Pt(4)
+            p_p2.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r_p2 = p_p2.add_run(parties2['p2'])
+            r_p2.font.size = Pt(9)
+
 
 def build_fundamental_analysis(doc, s: dict):
     """
@@ -1788,13 +1802,77 @@ def _build_financial_subtable(doc, s: dict, rows):
     doc.add_paragraph()
 
 
-def build_financial_data_complete(doc, s: dict):
+def build_financial_data_complete(doc, s: dict, source_doc=None):
     """
-    Données financières structurées complètes (style fiche BOAC) :
-    1. BILAN ACTIF  2. BILAN PASSIF  3. COMPTE DE RÉSULTAT
-    4. RATIOS DE RENTABILITÉ  5. STRUCTURE & LIQUIDITÉ
+    📊 DONNÉES FINANCIÈRES STRUCTURÉES & INTERPRÉTÉES
+    Copie fidèle depuis le rapport source (tous les tableaux + titres de section).
+    Fallback sur les données LLM si source_doc absent ou section non trouvée.
     """
-    _section_heading(doc, "DONNÉES FINANCIÈRES STRUCTURÉES")
+    _section_heading(doc, "📊 DONNÉES FINANCIÈRES STRUCTURÉES & INTERPRÉTÉES")
+
+    ticker = _s(s, "ticker", "?")
+
+    # ── Priorité 1 : copie depuis le rapport source ───────────────────────────
+    if source_doc is not None:
+        fin_blocks = _extract_donnees_financieres_tables(source_doc, ticker)
+        if fin_blocks:
+            # Afficher source du rapport
+            p_src = doc.add_paragraph()
+            p_src.paragraph_format.space_before = Pt(0)
+            p_src.paragraph_format.space_after  = Pt(4)
+            r_src = p_src.add_run("Source : rapport source BRVM — données officielles")
+            r_src.italic = True; r_src.font.size = Pt(8)
+            r_src.font.color.rgb = _rgb("888888")
+
+            for kind, el in fin_blocks:
+                if kind == 'p':
+                    # Paragraphe titre de section (📌 1. BILAN...)
+                    from docx.oxml.ns import qn as _qn2
+                    txt_raw = ''.join(n.text or '' for n in el.iter() if n.text).strip()
+                    def _dd2(s):
+                        n=len(s)
+                        for d in (3,2):
+                            if n%d==0 and s==s[:n//d]*d: return s[:n//d]
+                        return s
+                    txt = _dd2(txt_raw)
+                    if not txt: continue
+                    if 'DONNÉES FINANCIÈRES STRUCTURÉES' in txt.upper():
+                        continue  # déjà affiché en titre
+                    p_t = doc.add_paragraph()
+                    p_t.paragraph_format.space_before = Pt(6)
+                    p_t.paragraph_format.space_after  = Pt(2)
+                    r_t = p_t.add_run(txt)
+                    r_t.bold = True; r_t.font.size = Pt(9)
+                    r_t.font.color.rgb = _rgb("1A237E")
+
+                elif kind == 'tbl':
+                    # Copier le tableau depuis la source
+                    data = _read_source_tbl_for_copy(el)
+                    if not data: continue
+                    ncols = max(len(r) for r in data)
+                    if ncols == 0: continue
+                    tbl = doc.add_table(rows=len(data), cols=ncols)
+                    tbl.style = "Table Grid"
+                    for ri, row in enumerate(data):
+                        bg_h = "1A237E" if ri == 0 else ("F5F5F5" if ri % 2 == 0 else "FFFFFF")
+                        fg_h = "FFFFFF" if ri == 0 else "1A1A1A"
+                        for ci, cell_text in enumerate(row):
+                            if ci >= ncols: continue
+                            # Colorer selon emoji signal
+                            bg = bg_h
+                            if ri > 0:
+                                if '🟢' in cell_text: bg = "EBF7EE"
+                                elif '🔴' in cell_text: bg = "FDEEEE"
+                                elif '⚠️' in cell_text or '🟡' in cell_text: bg = "FFF8E6"
+                                elif '🔵' in cell_text: bg = "E8F0FB"
+                            _cw(tbl.rows[ri].cells[ci], cell_text[:150],
+                                bold=(ri == 0), size=8 if ri > 0 else 8,
+                                bg=bg, color=fg_h if ri == 0 else "1A1A1A")
+                    doc.add_paragraph()
+            return  # données source utilisées — pas de fallback
+
+    # ── Fallback : données LLM ────────────────────────────────────────────────
+    _section_heading(doc, "Données financières (LLM)", color="888888")
 
     date_donnees = _fund_val(s, "date_donnees_financieres")
     secteur = _s(s, "secteur", "—")
@@ -1919,6 +1997,26 @@ def build_financial_data_complete(doc, s: dict):
          _ratio_emoji(s.get("couverture_interets"),
                       good=3, vigilance=1.5)),
     ])
+
+
+def build_analyse_fondamentale_partie3(doc, s: dict, source_doc=None):
+    """PARTIE 3 : Analyse fondamentale depuis le rapport source."""
+    _section_heading(doc, "PARTIE 3 — Analyse fondamentale (section critique)")
+    ticker = _s(s, "ticker", "?")
+    if source_doc is not None:
+        parties3 = _extract_parties(source_doc, ticker)
+        if parties3.get('p3'):
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(2)
+            p.paragraph_format.space_after  = Pt(4)
+            p.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r = p.add_run(parties3['p3'])
+            r.font.size = Pt(9)
+            return
+    # Fallback LLM
+    analyse = _s(s, "synthese_financiere")
+    if analyse and analyse not in ("", "—"):
+        _narrative(doc, analyse, size=9)
 
 
 def build_conclusion(doc, s: dict):
@@ -2086,7 +2184,13 @@ def build_risques(doc, s: dict, source_doc=None):
     risque    = _s(s, "risque", "—")
     horizon   = _s(s, "horizon", "—")
     volat     = _s(s, "volatilite", "—")
-    beta      = _s(s, "beta", "—")
+    # Formater le bêta avec 2 décimales
+    beta_raw = _s(s, "beta", "—")
+    try:
+        beta_f = float(str(beta_raw).split("(")[0].replace(",",".").strip())
+        beta = f"{beta_f:.2f}"
+    except (ValueError, AttributeError):
+        beta = beta_raw
     confiance = _s(s, "confiance", "—")
     divergence = _s(s, "divergence", "—")
 
@@ -2104,6 +2208,14 @@ def build_risques(doc, s: dict, source_doc=None):
 
     # ── 0. Score de risque calculé (depuis le rapport source) ────────────────
     if source_doc is not None:
+        # Ajouter la Stabilité des rendements dans les indicateurs globaux
+        stab_rendements = _extract_stabilite_rendements(source_doc, ticker)
+        if stab_rendements:
+            # Nettoyer la valeur
+            stab_clean = re.sub(r'^[^a-zA-Z0-9σ]*', '', stab_rendements).strip()
+        else:
+            stab_clean = None
+
         risk_data = _extract_risk_score_data(source_doc, ticker)
         if risk_data:
             score_v = risk_data["score_str"]
@@ -2147,14 +2259,22 @@ def build_risques(doc, s: dict, source_doc=None):
                 doc.add_paragraph()
 
     # ── 1. Bloc indicateurs globaux ───────────────────────────────────────────
-    tbl = doc.add_table(rows=2, cols=5)
+    # Construire les colonnes selon disponibilité de stab_rendements
+    _headers = ["Niveau de risque", "Horizon", "Volatilité", "Bêta", "Confiance"]
+    _vals    = [f"{risk_emoji} {risque}", horizon, volat, beta, confiance]
+    _bgs     = [risk_bg, "F5F5F5", "F5F5F5", "F5F5F5", "F5F5F5"]
+    _fgs     = [risk_fg,  "333333", "333333", "333333", "333333"]
+    if stab_clean:
+        _headers.append("📉 Stabilité rendements")
+        _vals.append(stab_clean[:50])
+        _bgs.append("F5F5F5"); _fgs.append("333333")
+
+    ncols = len(_headers)
+    tbl = doc.add_table(rows=2, cols=ncols)
     tbl.style = "Table Grid"
-    for i, h in enumerate(["Niveau de risque", "Horizon", "Volatilité", "Bêta", "Confiance"]):
+    for i, h in enumerate(_headers):
         _cw(tbl.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
-    vals = [f"{risk_emoji} {risque}", horizon, volat, beta, confiance]
-    bgs  = [risk_bg, "F5F5F5", "F5F5F5", "F5F5F5", "F5F5F5"]
-    fgs  = [risk_fg,  "333333", "333333", "333333", "333333"]
-    for i, (v, bg, fg) in enumerate(zip(vals, bgs, fgs)):
+    for i, (v, bg, fg) in enumerate(zip(_vals, _bgs, _fgs)):
         _cw(tbl.rows[1].cells[i], v, bold=(i == 0), size=9, bg=bg, color=fg)
     doc.add_paragraph()
 
@@ -2224,6 +2344,7 @@ def _extract_company_section(source_doc, ticker: str) -> tuple:
     Localise la section individuelle d'une société dans le rapport source.
     Retourne (start_idx, end_idx, elements_list) ou (None, None, []).
     """
+    import re as _re
     elements = list(source_doc.element.body.iterchildren())
 
     def _ps(el):
@@ -2238,8 +2359,7 @@ def _extract_company_section(source_doc, ticker: str) -> tuple:
 
     ticker_start = None
     ticker_end   = None
-    # Le titre de section ressemble à "N. TICKER - TICKER - NOM SOCIÉTÉ"
-    rx = re.compile(r'^\s*\d+\.\s*' + re.escape(ticker) + r'')
+    rx = _re.compile(r'^\s*\d+\.\s*' + _re.escape(ticker) + r'\b')
 
     for i, child in enumerate(elements):
         if child.tag.split('}')[-1] != 'p': continue
@@ -2254,7 +2374,6 @@ def _extract_company_section(source_doc, ticker: str) -> tuple:
     if ticker_start is None:
         return None, None, elements
     return ticker_start, (ticker_end or min(ticker_start + 150, len(elements))), elements
-
 
 def _extract_risk_score_data(source_doc, ticker: str) -> dict | None:
     """
@@ -2412,6 +2531,183 @@ def _extract_risk_narrative(source_doc, ticker: str) -> list:
     return risk_sentences
 
 
+def _extract_stabilite_rendements(source_doc, ticker: str) -> str | None:
+    """
+    Extrait la ligne '📉 Stabilité des rendements (15%)' du tableau score risque.
+    Retourne la cellule complète (ex: 'σ_j=1.56%/j (Stable) — Vol. annualisée≈24.8%')
+    ou None si non trouvé.
+    """
+    ticker_start, ticker_end, elements = _extract_company_section(source_doc, ticker)
+    if ticker_start is None:
+        return None
+
+    def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+    def _read_tbl(tbl_el):
+        rows = []
+        for tr in tbl_el.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
+            cells = [_dd(''.join(n.text or '' for n in tc.iter() if n.text).strip())
+                     for tc in tr.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc')]
+            if cells: rows.append(cells)
+        return rows
+
+    for i in range(ticker_start, ticker_end):
+        child = elements[i]
+        if child.tag.split('}')[-1] != 'tbl': continue
+        data = _read_tbl(child)
+        for row in data:
+            if row and 'tabilit' in row[0].lower() and 'rendement' in row[0].lower():
+                return row[1] if len(row) > 1 else row[0]
+    return None
+
+
+def _extract_donnees_financieres_tables(source_doc, ticker: str) -> list:
+    """
+    Extrait la section '📊 DONNÉES FINANCIÈRES STRUCTURÉES & INTERPRÉTÉES'
+    du rapport source pour un ticker donné.
+    Retourne list[ (type, element) ] : type = 'p' ou 'tbl'
+    Inclut tous les paragraphes (titres de section) et tous les tableaux.
+    S'arrête au premier Heading3 qui n'est pas dans la section données financières.
+    """
+    ticker_start, ticker_end, elements = _extract_company_section(source_doc, ticker)
+    if ticker_start is None:
+        return []
+
+    def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+    def _ps(el):
+        pPr = el.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
+        return pPr.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '') if pPr is not None else ''
+
+    blocks = []
+    in_section = False
+
+    for i in range(ticker_start, ticker_end):
+        child = elements[i]
+        tag = child.tag.split('}')[-1]
+
+        if tag == 'p':
+            s = _ps(child)
+            t = _dd(_pt(child).strip())
+            if not t: continue
+
+            # Détecter le début de la section données financières
+            if 'DONNÉES FINANCIÈRES STRUCTURÉES' in t.upper() or 'DONNÉES FINANCIERES STRUCTURÉES' in t.upper():
+                in_section = True
+                blocks.append(('p', child))
+                continue
+
+            if in_section:
+                # Arrêter aux sections suivantes (Heading3 qui ne sont pas dans données fin.)
+                if s in ('Heading3', 'Titre3') and not any(
+                    w in t for w in ('BILAN', 'COMPTE', 'CASH', 'RATIO', 'STRUCTURE', 'DÉLAI', 'DONNÉE')
+                ):
+                    break
+                # Garder paragraphes de labels (📌 1. BILAN...) et textes
+                blocks.append(('p', child))
+
+        elif tag == 'tbl' and in_section:
+            blocks.append(('tbl', child))
+
+    return blocks
+
+
+def _extract_parties(source_doc, ticker: str) -> dict:
+    """
+    Extrait les textes PARTIE 0, 1, 2, 3 du rapport source pour un ticker.
+    Structure source :
+      **PARTIE 0 : INDICATEURS DE VALORISATION BOURSIÈRE**
+      texte...
+      **PARTIE 1 : ANALYSE DU COURS — STATISTIQUES ET ÉVOLUTION (100 derniers jours)**
+      texte...
+      **PARTIE 2 : ANALYSE TECHNIQUE DÉTAILLÉE**
+      texte... (plusieurs paragraphes)
+      **PARTIE 3 : ANALYSE FONDAMENTALE (SECTION CRITIQUE)**
+      texte...
+
+    Retourne dict : {'p0': str, 'p1': str, 'p2': str, 'p3': str}
+    """
+    ticker_start, ticker_end, elements = _extract_company_section(source_doc, ticker)
+    if ticker_start is None:
+        return {}
+
+    def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+
+    result = {'p0': '', 'p1': '', 'p2': '', 'p3': ''}
+    current_part = None
+
+    for i in range(ticker_start, ticker_end):
+        child = elements[i]
+        if child.tag.split('}')[-1] != 'p': continue
+        raw = _pt(child).strip()
+        txt = _dd(raw)
+        if not txt: continue
+
+        # Détecter les marqueurs de parties
+        t_up = txt.upper()
+        if 'PARTIE 0' in t_up and 'VALORISATION' in t_up:
+            current_part = 'p0'
+            continue
+        if 'PARTIE 1' in t_up and 'COURS' in t_up:
+            current_part = 'p1'
+            continue
+        if 'PARTIE 2' in t_up and 'TECHNIQUE' in t_up:
+            current_part = 'p2'
+            continue
+        if 'PARTIE 3' in t_up and 'FONDAMENTALE' in t_up:
+            current_part = 'p3'
+            continue
+        if 'PARTIE 4' in t_up and 'CONCLUSION' in t_up:
+            break  # on s'arrête avant la conclusion
+
+        if current_part:
+            # Nettoyer le texte (enlever **markdown**)
+            clean = re.sub(r'[*]{1,3}([^*]+)[*]{1,3}', r'\1', txt)
+            clean = re.sub(r'^[*]\s+', '', clean)
+            clean = clean.strip()
+            if clean and not clean.startswith('---'):
+                result[current_part] += (' ' if result[current_part] else '') + clean
+
+    # Tronquer à 600 chars par partie
+    for k in result:
+        if len(result[k]) > 600:
+            result[k] = result[k][:597] + '…'
+
+    return result
+
+
+def _read_source_tbl_for_copy(tbl_el) -> list:
+    """
+    Lit un tableau source et retourne ses données pour copie.
+    Retourne list[list[str]] dédupliqué.
+    """
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+    rows = []
+    for tr in tbl_el.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
+        cells = [_dd(''.join(n.text or '' for n in tc.iter() if n.text).strip())
+                 for tc in tr.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc')]
+        if cells:
+            rows.append(cells)
+    return rows
+
+
 def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
                       period_info: dict = None,
                       images_map: dict | None = None,
@@ -2458,7 +2754,9 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
     _add_separator(doc)
     build_financial_analysis(doc, s)         # Analyse financière détaillée
     _add_separator(doc)
-    build_financial_data_complete(doc, s)    # Données financières structurées
+    build_financial_data_complete(doc, s, source_doc)  # 📊 Données financières (copie source)
+    _add_separator(doc)
+    build_analyse_fondamentale_partie3(doc, s, source_doc)  # PARTIE 3 fondamentale
     _add_separator(doc)
     build_conclusion(doc, s)                 # Conclusion : matrice + divergences + action
     _pied(doc, date_str, freq, period_info)
