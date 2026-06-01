@@ -1374,22 +1374,31 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
     r_synth = p_synth.add_run(synthese)
     r_synth.font.size = Pt(9)
 
-    # ── Commentaire narratif du cours (extrait du rapport source, PARTIE 1) ──
-    # Le rapport source contient un paragraphe "PARTIE 1 : ANALYSE DU COURS"
-    # avec le texte d'analyse réel (ex: "Sur les 100 derniers jours, le cours
-    # d'ABJC a subi une correction de -10.25%..."). On l'affiche ici.
+    # ── PARTIE 1 : Analyse du cours (statistiques 100 jours) ────────────────
+    # puis PARTIE 0 : Indicateurs de valorisation boursière
     _src_doc = s.get("_source_doc_ref")
     if _src_doc is not None:
-        cours_comment = _extract_cours_commentary(_src_doc, ticker)
-        if cours_comment:
-            p_cc = doc.add_paragraph()
-            p_cc.paragraph_format.space_before = Pt(2)
-            p_cc.paragraph_format.space_after  = Pt(4)
-            p_cc.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
-            r_cc = p_cc.add_run(cours_comment)
-            r_cc.font.size = Pt(9)
-            r_cc.italic    = True
-            r_cc.font.color.rgb = _rgb("333333")
+        parties_chart = _extract_parties(_src_doc, ticker)
+
+        # PARTIE 1 en premier : analyse statistique du cours sur 100 jours
+        if parties_chart.get('p1'):
+            _sub_heading(doc, "PARTIE 1 — Analyse du cours (statistiques & évolution 100 jours)")
+            p_p1 = doc.add_paragraph()
+            p_p1.paragraph_format.space_before = Pt(1)
+            p_p1.paragraph_format.space_after  = Pt(4)
+            p_p1.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r_p1 = p_p1.add_run(parties_chart['p1'])
+            r_p1.font.size = Pt(9)
+
+        # PARTIE 0 après : valorisation boursière (PER, BPA, P/B, EV/EBITDA)
+        if parties_chart.get('p0'):
+            _sub_heading(doc, "PARTIE 0 — Indicateurs de valorisation boursière")
+            p_p0 = doc.add_paragraph()
+            p_p0.paragraph_format.space_before = Pt(1)
+            p_p0.paragraph_format.space_after  = Pt(4)
+            p_p0.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r_p0 = p_p0.add_run(parties_chart['p0'])
+            r_p0.font.size = Pt(9)
 
     # ── Bloc signal coloré (1 ligne) ──────────────────────────────────────────
     tbl2 = doc.add_table(rows=1, cols=1)
@@ -1624,6 +1633,21 @@ def build_fundamental_analysis(doc, s: dict):
                   "  |  ".join(str(r) for r in risques[:3]),
                   "FFF0E6", "C0392B")
 
+    # ── PARTIE 3 : texte d'analyse fondamentale depuis le rapport source ─────
+    # (rapports trimestriels, tendances récentes, recommandation source)
+    _src_doc_f = s.get("_source_doc_ref")
+    if _src_doc_f is not None:
+        _ticker_f = _s(s, "ticker", "?")
+        parties_f = _extract_parties(_src_doc_f, _ticker_f)
+        if parties_f.get("p3"):
+            _sub_heading(doc, "Analyse fondamentale — données récentes (source rapport)")
+            p_f3 = doc.add_paragraph()
+            p_f3.paragraph_format.space_before = Pt(2)
+            p_f3.paragraph_format.space_after  = Pt(4)
+            p_f3.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r_f3 = p_f3.add_run(parties_f["p3"])
+            r_f3.font.size = Pt(9)
+
     persp = _s(s, "perspectives")
     if persp and persp not in ("", "—"):
         _key_bloc(doc, "PERSPECTIVES :", persp, "E8F8F0", "155724")
@@ -1699,18 +1723,62 @@ def build_financial_analysis(doc, s: dict):
                    "Historique sur 2-3 ans non disponible dans le rapport source.",
                    size=8, italic=True, color="888888")
 
-    forces = _sl(s, "forces_financieres")[:3]
-    faibles = _sl(s, "faiblesses_financieres")[:3]
+    forces = _sl(s, "forces_financieres")
+    faibles = _sl(s, "faiblesses_financieres")
+
+    # ── Enrichir forces/faiblesses depuis les ratios extraits ────────────────
+    # Générer des forces/faiblesses additionnelles depuis les champs numériques
+    def _enrich_from_ratios(s):
+        extra_forces, extra_faibles = [], []
+        def _pf(v):
+            try: return float(str(v).replace('%','').replace(',','.').replace(' ',''))
+            except: return None
+
+        roe  = _pf(s.get("roe"))
+        roa  = _pf(s.get("roa"))
+        marge = _pf(s.get("marge_nette"))
+        per  = _pf(s.get("per"))
+        croiss = _pf(s.get("croissance_ca_1an") or s.get("croissance_ca"))
+        cap_ex = _pf(s.get("coefficient_exploitation"))
+        cout_r = _pf(s.get("cout_du_risque"))
+        autono = _pf(s.get("autonomie_financiere"))
+
+        if roe and roe > 15: extra_forces.append(f"ROE élevé ({roe:.1f}%) — forte rentabilité des fonds propres")
+        elif roe and roe < 8: extra_faibles.append(f"ROE faible ({roe:.1f}%) — rentabilité des fonds propres insuffisante")
+
+        if roa and roa > 2: extra_forces.append(f"ROA solide ({roa:.2f}%) — bonne rentabilité des actifs")
+        elif roa and roa < 0.8: extra_faibles.append(f"ROA faible ({roa:.2f}%) — actifs peu rentabilisés")
+
+        if marge and marge > 30: extra_forces.append(f"Marge nette élevée ({marge:.1f}%) — profitabilité excellente")
+        elif marge and marge < 10: extra_faibles.append(f"Marge nette faible ({marge:.1f}%) — pression sur la rentabilité")
+
+        if croiss and croiss > 10: extra_forces.append(f"Forte croissance CA ({croiss:+.1f}%) — dynamisme commercial")
+        elif croiss and croiss < 0: extra_faibles.append(f"CA en recul ({croiss:+.1f}%) — contraction de l'activité")
+
+        if cap_ex and cap_ex < 50: extra_forces.append(f"Coefficient d'exploitation maîtrisé ({cap_ex:.1f}%) — efficacité opérationnelle")
+        elif cap_ex and cap_ex > 65: extra_faibles.append(f"Coefficient d'exploitation élevé ({cap_ex:.1f}%) — coûts structurels lourds")
+
+        if cout_r and cout_r > 15: extra_faibles.append(f"Coût du risque élevé ({cout_r:.1f}%) — provisions importantes")
+        if autono and autono < 10: extra_faibles.append(f"Autonomie financière limitée ({autono:.1f}%) — forte dépendance externe")
+        elif autono and autono > 20: extra_forces.append(f"Bonne autonomie financière ({autono:.1f}%) — structure bilancielle solide")
+
+        return extra_forces, extra_faibles
+
+    ef, ew = _enrich_from_ratios(s)
+    # Fusionner sans doublons (max 6 par catégorie)
+    all_forces  = list(dict.fromkeys(forces  + ef))[:6]
+    all_faibles = list(dict.fromkeys(faibles + ew))[:6]
 
     _sub_heading(doc, "3.  Forces et faiblesses financières")
-    if forces or faibles:
-        tbl_ff = doc.add_table(rows=4, cols=2)
+    if all_forces or all_faibles:
+        max_rows = max(len(all_forces), len(all_faibles), 1)
+        tbl_ff = doc.add_table(rows=1 + max_rows, cols=2)
         tbl_ff.style = "Table Grid"
         _cw(tbl_ff.rows[0].cells[0], "✚  FORCES", bold=True, size=9, bg="0F9D58", color="FFFFFF")
         _cw(tbl_ff.rows[0].cells[1], "−  FAIBLESSES", bold=True, size=9, bg="D93025", color="FFFFFF")
-        for i in range(3):
-            f_txt = forces[i] if i < len(forces) else "—"
-            w_txt = faibles[i] if i < len(faibles) else "—"
+        for i in range(max_rows):
+            f_txt = all_forces[i]  if i < len(all_forces)  else "—"
+            w_txt = all_faibles[i] if i < len(all_faibles) else "—"
             _cw(tbl_ff.rows[i + 1].cells[0], f"• {f_txt}", size=8, bg="EBF7EE" if f_txt != "—" else "F5F5F5")
             _cw(tbl_ff.rows[i + 1].cells[1], f"• {w_txt}", size=8, bg="FDEEEE" if w_txt != "—" else "F5F5F5")
         doc.add_paragraph()
@@ -1805,12 +1873,26 @@ def _build_financial_subtable(doc, s: dict, rows):
 def build_financial_data_complete(doc, s: dict, source_doc=None):
     """
     📊 DONNÉES FINANCIÈRES STRUCTURÉES & INTERPRÉTÉES
+    Précédée de la synthèse/conclusion d'investissement (PARTIE 4 du rapport source).
     Copie fidèle depuis le rapport source (tous les tableaux + titres de section).
     Fallback sur les données LLM si source_doc absent ou section non trouvée.
     """
-    _section_heading(doc, "📊 DONNÉES FINANCIÈRES STRUCTURÉES & INTERPRÉTÉES")
-
     ticker = _s(s, "ticker", "?")
+
+    # ── Synthèse finale (PARTIE 4 source) avant les données financières ──────
+    src_ind = s.get("_src_indicators") or {}
+    partie4 = src_ind.get("partie4", "")
+    if partie4:
+        _section_heading(doc, "SYNTHÈSE & RECOMMANDATION FINALE")
+        p_s4 = doc.add_paragraph()
+        p_s4.paragraph_format.space_before = Pt(2)
+        p_s4.paragraph_format.space_after  = Pt(6)
+        p_s4.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+        r_s4 = p_s4.add_run(partie4)
+        r_s4.font.size = Pt(9)
+        _add_separator(doc)
+
+    _section_heading(doc, "📊 DONNÉES FINANCIÈRES STRUCTURÉES & INTERPRÉTÉES")
 
     # ── Priorité 1 : copie depuis le rapport source ───────────────────────────
     if source_doc is not None:
@@ -2184,11 +2266,11 @@ def build_risques(doc, s: dict, source_doc=None):
     risque    = _s(s, "risque", "—")
     horizon   = _s(s, "horizon", "—")
     volat     = _s(s, "volatilite", "—")
-    # Formater le bêta avec 2 décimales
+    # Formater le bêta avec 4 décimales (valeur réelle depuis le tableau score risque)
     beta_raw = _s(s, "beta", "—")
     try:
-        beta_f = float(str(beta_raw).split("(")[0].replace(",",".").strip())
-        beta = f"{beta_f:.2f}"
+        beta_f = float(str(beta_raw).split("(")[0].replace(",", ".").strip())
+        beta = f"{beta_f:.4f}"
     except (ValueError, AttributeError):
         beta = beta_raw
     confiance = _s(s, "confiance", "—")
@@ -2708,6 +2790,162 @@ def _read_source_tbl_for_copy(tbl_el) -> list:
     return rows
 
 
+
+def _extract_source_indicators(source_doc, ticker: str) -> dict:
+    """
+    Extrait depuis le rapport source :
+    - Le bêta RÉEL (depuis le tableau score risque : "β=0.0563 (Défensif)...")
+    - Les valeurs numériques des indicateurs techniques :
+        mm20_val, mm50_val, boll_inf, boll_sup, macd_val, macd_sig, rsi_val, stoch_k, stoch_d
+    - Le texte PARTIE 4 (conclusion d'investissement / synthèse)
+
+    Retourne dict avec toutes ces valeurs, ou dict vide si non trouvé.
+    """
+    import re as _re
+    ticker_start, ticker_end, elements = _extract_company_section(source_doc, ticker)
+    if ticker_start is None:
+        return {}
+
+    def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+    def _read_tbl(tbl_el):
+        rows = []
+        for tr in tbl_el.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
+            cells = [_dd(''.join(n.text or '' for n in tc.iter() if n.text).strip())
+                     for tc in tr.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc')]
+            if cells: rows.append(cells)
+        return rows
+
+    result = {
+        'beta_reel': None,
+        'mm20_val': None, 'mm50_val': None,
+        'boll_inf': None, 'boll_sup': None,
+        'macd_val': None, 'macd_sig': None,
+        'rsi_val': None,
+        'stoch_k': None, 'stoch_d': None,
+        'partie4': '',
+    }
+
+    def _num(s):
+        """Extrait un float depuis une string comme '9 091,75' ou '271.251'"""
+        if not s: return None
+        s2 = s.replace(' ', '').replace('\u00a0', '')
+        # Format français : virgule = décimale, espace = milliers
+        if ',' in s2 and '.' not in s2:
+            s2 = s2.replace(',', '.')
+        elif ',' in s2 and '.' in s2:
+            # ex: "9,091.75" → enlever virgule de milliers
+            s2 = s2.replace(',', '')
+        try:
+            return float(s2)
+        except (ValueError, TypeError):
+            return None
+
+    in_partie4 = False
+    score_found = False
+
+    for i in range(ticker_start, ticker_end):
+        child = elements[i]
+        tag = child.tag.split('}')[-1]
+        raw = _pt(child).strip() if tag == 'p' else ''
+        txt = _dd(raw) if raw else ''
+
+        # ── BÊTA depuis tableau score risque ──────────────────────────────────
+        if tag == 'tbl' and result['beta_reel'] is None:
+            data = _read_tbl(child)
+            full = str(data)
+            if 'êta' in full or 'Bêt' in full:
+                for row in data:
+                    cell = ' '.join(row)
+                    m = _re.search(r'β\s*=\s*([\d.,]+)', cell)
+                    if m:
+                        result['beta_reel'] = _num(m.group(1))
+                        break
+
+        # ── Valeurs numériques indicateurs techniques ─────────────────────────
+        if tag == 'p' and txt:
+            t_low = txt.lower()
+
+            # MM20 / MM50
+            if 'mm20' in t_low or 'mm 20' in t_low or 'moyenne mobile' in t_low:
+                m20 = _re.search(r'(?:MM20|M20)[^0-9]*?([\d\s]+[,.][\d]+)', txt, _re.IGNORECASE)
+                m50 = _re.search(r'(?:MM50|M50)[^0-9]*?([\d\s]+[,.][\d]+)', txt, _re.IGNORECASE)
+                if m20 and result['mm20_val'] is None:
+                    result['mm20_val'] = _num(m20.group(1))
+                if m50 and result['mm50_val'] is None:
+                    result['mm50_val'] = _num(m50.group(1))
+
+            # Bollinger
+            if 'bollinger' in t_low or 'bande' in t_low or 'borne' in t_low:
+                b_inf = _re.search(r'(?:inf[eé]rieure?|basse?|basse des bandes)[^0-9]*?([\d\s]+[,.][\d]+)', txt, _re.IGNORECASE)
+                b_sup = _re.search(r'(?:sup[eé]rieure?|haute?|haute des bandes)[^0-9]*?([\d\s]+[,.][\d]+)', txt, _re.IGNORECASE)
+                # Alternative : deux nombres consécutifs pour borne inf/sup
+                if not b_inf and not b_sup:
+                    nums = _re.findall(r'([\d]{4,6}[,.][\d]+)', txt)
+                    if len(nums) >= 2:
+                        b_inf_v = _num(nums[0])
+                        b_sup_v = _num(nums[-1])
+                        if b_inf_v and b_sup_v and b_inf_v < b_sup_v:
+                            if result['boll_inf'] is None: result['boll_inf'] = b_inf_v
+                            if result['boll_sup'] is None: result['boll_sup'] = b_sup_v
+                if b_inf and result['boll_inf'] is None:
+                    result['boll_inf'] = _num(b_inf.group(1))
+                if b_sup and result['boll_sup'] is None:
+                    result['boll_sup'] = _num(b_sup.group(1))
+
+            # MACD
+            if 'macd' in t_low:
+                m_macd = _re.search(r'MACD\s*[\(\[]?([\d\s]+[,.][\d]+)', txt, _re.IGNORECASE)
+                m_sig  = _re.search(r'(?:signal|ligne de signal)\s*[\(\[]?([\d\s]+[,.][\d]+)', txt, _re.IGNORECASE)
+                if m_macd and result['macd_val'] is None:
+                    result['macd_val'] = _num(m_macd.group(1))
+                if m_sig and result['macd_sig'] is None:
+                    result['macd_sig'] = _num(m_sig.group(1))
+
+            # RSI
+            if 'rsi' in t_low:
+                m_rsi = _re.search(r'RSI\s*(?:à|de|est|=|:)?\s*(?:une valeur de\s*)?([\d]+[,.][\d]+)', txt, _re.IGNORECASE)
+                if m_rsi and result['rsi_val'] is None:
+                    result['rsi_val'] = _num(m_rsi.group(1))
+
+            # Stochastique
+            if 'stoch' in t_low or '%k' in t_low:
+                m_k = _re.search(r'%K\s*[\(\[]?([\d]+[,.][\d]+)', txt, _re.IGNORECASE)
+                m_d = _re.search(r'%D\s*[\(\[]?([\d]+[,.][\d]+)', txt, _re.IGNORECASE)
+                if m_k and result['stoch_k'] is None:
+                    result['stoch_k'] = _num(m_k.group(1))
+                if m_d and result['stoch_d'] is None:
+                    result['stoch_d'] = _num(m_d.group(1))
+
+            # PARTIE 4 — synthèse finale
+            if 'PARTIE 4' in txt.upper() and 'CONCLUSION' in txt.upper():
+                in_partie4 = True
+                continue
+            if in_partie4:
+                # Arrêter si on tombe sur un nouveau Heading ou section majeure
+                from docx.oxml.ns import qn as _qn
+                def _ps2(el):
+                    pPr = el.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
+                    return pPr.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '') if pPr is not None else ''
+                s = _ps2(child)
+                if s in ('Heading3','Titre3','Heading2','Titre2') or txt.startswith('📎') or txt.startswith('📋'):
+                    in_partie4 = False
+                elif txt and not txt.startswith('---'):
+                    clean4 = _re.sub(r'[*#]+', '', txt).strip()
+                    if clean4 and len(result['partie4']) < 800:
+                        result['partie4'] += (' ' if result['partie4'] else '') + clean4
+
+    # Tronquer la partie 4
+    if len(result['partie4']) > 800:
+        result['partie4'] = result['partie4'][:797] + '…'
+
+    return result
+
+
 def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
                       period_info: dict = None,
                       images_map: dict | None = None,
@@ -2739,6 +2977,29 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
     # Récupérer le PNG source pour ce ticker (None si absent)
     ticker = str(s.get("ticker") or "").strip().upper()
     source_png = (images_map or {}).get(ticker)
+
+    # ── Extraire et injecter les indicateurs RÉELS depuis le rapport source ───
+    # Bêta réel, MM20/MM50, Bollinger, MACD, RSI, Stoch, PARTIE 4
+    if source_doc is not None and s.get("_src_indicators") is None:
+        _si = _extract_source_indicators(source_doc, ticker)
+        s["_src_indicators"] = _si
+        # Bêta réel (ex: 0.0563 au lieu de 1.0 du LLM)
+        if _si.get("beta_reel") is not None:
+            s["beta"] = f"{_si['beta_reel']:.4f}"
+        # Valeurs numériques indicateurs techniques
+        for _s_key, _i_key in [
+            ("mm20_valeur",    "mm20_val"),
+            ("mm50_valeur",    "mm50_val"),
+            ("boll_inf",       "boll_inf"),
+            ("boll_sup",       "boll_sup"),
+            ("macd_valeur",    "macd_val"),
+            ("macd_signal_line", "macd_sig"),
+            ("rsi_valeur",     "rsi_val"),
+            ("stoch_k",        "stoch_k"),
+            ("stoch_d",        "stoch_d"),
+        ]:
+            if s.get(_s_key) is None and _si.get(_i_key) is not None:
+                s[_s_key] = _si[_i_key]
 
     build_header(doc, s, date_str)           # En-tête : ticker, score, reco, indicateurs
     _add_separator(doc)
