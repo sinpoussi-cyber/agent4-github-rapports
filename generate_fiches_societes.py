@@ -1873,24 +1873,10 @@ def _build_financial_subtable(doc, s: dict, rows):
 def build_financial_data_complete(doc, s: dict, source_doc=None):
     """
     📊 DONNÉES FINANCIÈRES STRUCTURÉES & INTERPRÉTÉES
-    Précédée de la synthèse/conclusion d'investissement (PARTIE 4 du rapport source).
     Copie fidèle depuis le rapport source (tous les tableaux + titres de section).
     Fallback sur les données LLM si source_doc absent ou section non trouvée.
     """
     ticker = _s(s, "ticker", "?")
-
-    # ── Synthèse finale (PARTIE 4 source) avant les données financières ──────
-    src_ind = s.get("_src_indicators") or {}
-    partie4 = src_ind.get("partie4", "")
-    if partie4:
-        _section_heading(doc, "SYNTHÈSE & RECOMMANDATION FINALE")
-        p_s4 = doc.add_paragraph()
-        p_s4.paragraph_format.space_before = Pt(2)
-        p_s4.paragraph_format.space_after  = Pt(6)
-        p_s4.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
-        r_s4 = p_s4.add_run(partie4)
-        r_s4.font.size = Pt(9)
-        _add_separator(doc)
 
     _section_heading(doc, "📊 DONNÉES FINANCIÈRES STRUCTURÉES & INTERPRÉTÉES")
 
@@ -2104,11 +2090,39 @@ def build_analyse_fondamentale_partie3(doc, s: dict, source_doc=None):
 def build_conclusion(doc, s: dict):
     """
     Conclusion d'investissement :
+    0. Synthèse PARTIE 4 depuis le rapport source (si disponible)
     1. Matrice Risque × Horizon de placement
     2. Divergences majeures
     3. Recommandation finale avec action claire
     """
     _section_heading(doc, "CONCLUSION D'INVESTISSEMENT")
+
+    # ── PARTIE 4 : Synthèse depuis le rapport source ──────────────────────────
+    # Utiliser _extract_parties pour avoir le texte complet et non tronqué
+    _src_doc_c = s.get("_source_doc_ref")
+    ticker_c   = _s(s, "ticker", "?")
+    _src_indicators = s.get("_src_indicators") or {}
+
+    if _src_doc_c is not None:
+        parties_c = _extract_parties(_src_doc_c, ticker_c)
+        p4_text = parties_c.get('p4', '')
+        if p4_text:
+            p_s4 = doc.add_paragraph()
+            p_s4.paragraph_format.space_before = Pt(2)
+            p_s4.paragraph_format.space_after  = Pt(6)
+            p_s4.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r_s4 = p_s4.add_run(p4_text)
+            r_s4.font.size = Pt(9)
+            doc.add_paragraph()
+    elif _src_indicators.get('partie4'):
+        # Fallback sur la version de _extract_source_indicators
+        p_s4 = doc.add_paragraph()
+        p_s4.paragraph_format.space_before = Pt(2)
+        p_s4.paragraph_format.space_after  = Pt(6)
+        p_s4.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
+        r_s4 = p_s4.add_run(_src_indicators['partie4'])
+        r_s4.font.size = Pt(9)
+        doc.add_paragraph()
 
     ticker = _s(s, "ticker", "—")
     score_f = _score_f(s)
@@ -2688,10 +2702,17 @@ def _extract_donnees_financieres_tables(source_doc, ticker: str) -> list:
                 continue
 
             if in_section:
-                # Arrêter aux sections suivantes (Heading3 qui ne sont pas dans données fin.)
+                # Arrêter aux sections suivantes
+                # — Heading3 hors sections de données financières
+                # — Textes qui marquent le début des PARTIES narratives
                 if s in ('Heading3', 'Titre3') and not any(
                     w in t for w in ('BILAN', 'COMPTE', 'CASH', 'RATIO', 'STRUCTURE', 'DÉLAI', 'DONNÉE')
                 ):
+                    break
+                # Arrêter si on tombe sur les PARTIES narratives (0-4) ou doublon rapport
+                if any(m in t.upper() for m in ('PARTIE 0', 'PARTIE 1', 'PARTIE 2',
+                                                  'PARTIE 3', 'PARTIE 4', 'ABSOLUMENT',
+                                                  'RAPPORT D\'ANALYSE', '### **RAPPORT')):
                     break
                 # Garder paragraphes de labels (📌 1. BILAN...) et textes
                 blocks.append(('p', child))
@@ -2704,18 +2725,21 @@ def _extract_donnees_financieres_tables(source_doc, ticker: str) -> list:
 
 def _extract_parties(source_doc, ticker: str) -> dict:
     """
-    Extrait les textes PARTIE 0, 1, 2, 3 du rapport source pour un ticker.
+    Extrait les textes PARTIE 0, 1, 2, 3, 4 du rapport source pour un ticker.
     Structure source :
       **PARTIE 0 : INDICATEURS DE VALORISATION BOURSIÈRE**
-      texte...
+      texte (1 paragraphe)
       **PARTIE 1 : ANALYSE DU COURS — STATISTIQUES ET ÉVOLUTION (100 derniers jours)**
-      texte...
+      texte (1 paragraphe)
       **PARTIE 2 : ANALYSE TECHNIQUE DÉTAILLÉE**
-      texte... (plusieurs paragraphes)
+      texte... (PLUSIEURS paragraphes : MM, Bollinger, MACD, RSI, Stoch, Conclusion)
       **PARTIE 3 : ANALYSE FONDAMENTALE (SECTION CRITIQUE)**
-      texte...
+      texte (1-2 paragraphes)
+      **PARTIE 4 : CONCLUSION D'INVESTISSEMENT**
+      texte (plusieurs paragraphes)
 
-    Retourne dict : {'p0': str, 'p1': str, 'p2': str, 'p3': str}
+    Retourne dict : {'p0': str, 'p1': str, 'p2': str, 'p3': str, 'p4': str}
+    SANS limite de longueur — texte complet tel que dans le rapport source.
     """
     ticker_start, ticker_end, elements = _extract_company_section(source_doc, ticker)
     if ticker_start is None:
@@ -2728,7 +2752,7 @@ def _extract_parties(source_doc, ticker: str) -> dict:
             if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
         return s
 
-    result = {'p0': '', 'p1': '', 'p2': '', 'p3': ''}
+    result = {'p0': '', 'p1': '', 'p2': '', 'p3': '', 'p4': ''}
     current_part = None
 
     for i in range(ticker_start, ticker_end):
@@ -2738,35 +2762,53 @@ def _extract_parties(source_doc, ticker: str) -> dict:
         txt = _dd(raw)
         if not txt: continue
 
-        # Détecter les marqueurs de parties
+        import re as _re2
         t_up = txt.upper()
-        if 'PARTIE 0' in t_up and 'VALORISATION' in t_up:
-            current_part = 'p0'
+
+        # Détecter les marqueurs de parties : le mot "PARTIE X" doit être en DÉBUT du texte
+        # (ex: "### **PARTIE 0 : ..." ou "**PARTIE 0 :**")
+        # On refuse les faux positifs type "La valorisation (Partie 0) est..."
+        is_part_marker = bool(_re2.match(
+            r'^\s*[#*\s]*PARTIE\s*([0-4])\s*[:\–\-]', txt, _re2.IGNORECASE
+        ))
+
+        if is_part_marker and 'PARTIE 0' in t_up and 'VALORISATION' in t_up:
+            current_part = 'p0'; continue
+        if is_part_marker and 'PARTIE 1' in t_up and 'COURS' in t_up:
+            current_part = 'p1'; continue
+        if is_part_marker and 'PARTIE 2' in t_up and 'TECHNIQUE' in t_up:
+            current_part = 'p2'; continue
+        if is_part_marker and 'PARTIE 3' in t_up and 'FONDAMENTALE' in t_up:
+            current_part = 'p3'; continue
+        if is_part_marker and 'PARTIE 4' in t_up and 'CONCLUSION' in t_up:
+            current_part = 'p4'; continue
+
+        # Arrêter aux sections non narratives
+        stop_markers = ('📎', '📋', '· · ·', '────', '════', '---')
+        if any(txt.startswith(m) for m in stop_markers):
+            if current_part == 'p4':
+                current_part = None
             continue
-        if 'PARTIE 1' in t_up and 'COURS' in t_up:
-            current_part = 'p1'
+        if txt.startswith('[') and ('Télécharger' in txt or 'Année :' in txt):
+            if current_part == 'p4':
+                current_part = None
             continue
-        if 'PARTIE 2' in t_up and 'TECHNIQUE' in t_up:
-            current_part = 'p2'
+        # Arrêter PARTIE 4 sur les lignes de documents/rapports annexes
+        if current_part == 'p4' and any(m in txt for m in (
+            'Recommandation source :', '⚠️ Risques :', '🔮 Perspectives :',
+            'Indicateurs financiers :', 'Points clés :', 'Année : 20'
+        )):
+            current_part = None
             continue
-        if 'PARTIE 3' in t_up and 'FONDAMENTALE' in t_up:
-            current_part = 'p3'
-            continue
-        if 'PARTIE 4' in t_up and 'CONCLUSION' in t_up:
-            break  # on s'arrête avant la conclusion
 
         if current_part:
-            # Nettoyer le texte (enlever **markdown**)
+            # Nettoyer markdown **gras** → texte
             clean = re.sub(r'[*]{1,3}([^*]+)[*]{1,3}', r'\1', txt)
-            clean = re.sub(r'^[*]\s+', '', clean)
-            clean = clean.strip()
-            if clean and not clean.startswith('---'):
-                result[current_part] += (' ' if result[current_part] else '') + clean
-
-    # Tronquer à 600 chars par partie
-    for k in result:
-        if len(result[k]) > 600:
-            result[k] = result[k][:597] + '…'
+            clean = re.sub(r'^[*#-]\s+', '', clean)
+            clean = re.sub(r'\s{2,}', ' ', clean).strip()
+            if clean and not clean.startswith('---') and not clean.startswith('Absolument'):
+                sep = '\n' if current_part == 'p2' else ' '
+                result[current_part] += (sep if result[current_part] else '') + clean
 
     return result
 
@@ -2861,7 +2903,7 @@ def _extract_source_indicators(source_doc, ticker: str) -> dict:
             if 'êta' in full or 'Bêt' in full:
                 for row in data:
                     cell = ' '.join(row)
-                    m = _re.search(r'β\s*=\s*([\d.,]+)', cell)
+                    m = _re.search(r'β\s*=\s*([-]?[\d.,]+)', cell)
                     if m:
                         result['beta_reel'] = _num(m.group(1))
                         break
@@ -2921,27 +2963,22 @@ def _extract_source_indicators(source_doc, ticker: str) -> dict:
                 if m_d and result['stoch_d'] is None:
                     result['stoch_d'] = _num(m_d.group(1))
 
-            # PARTIE 4 — synthèse finale
+            # PARTIE 4 — maintenant gérée par _extract_parties (plus complète)
             if 'PARTIE 4' in txt.upper() and 'CONCLUSION' in txt.upper():
                 in_partie4 = True
                 continue
             if in_partie4:
-                # Arrêter si on tombe sur un nouveau Heading ou section majeure
-                from docx.oxml.ns import qn as _qn
                 def _ps2(el):
                     pPr = el.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
                     return pPr.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '') if pPr is not None else ''
                 s = _ps2(child)
-                if s in ('Heading3','Titre3','Heading2','Titre2') or txt.startswith('📎') or txt.startswith('📋'):
+                if s in ('Heading3','Titre3','Heading2','Titre2') or txt.startswith('📎') or txt.startswith('📋') or txt.startswith('['):
                     in_partie4 = False
-                elif txt and not txt.startswith('---'):
+                elif txt and not txt.startswith('---') and not txt.startswith('Absolument'):
                     clean4 = _re.sub(r'[*#]+', '', txt).strip()
-                    if clean4 and len(result['partie4']) < 800:
-                        result['partie4'] += (' ' if result['partie4'] else '') + clean4
-
-    # Tronquer la partie 4
-    if len(result['partie4']) > 800:
-        result['partie4'] = result['partie4'][:797] + '…'
+                    # Dédupliquer : ne pas ajouter si déjà présent (texte triplé dans source)
+                    if clean4 and clean4 not in result['partie4']:
+                        result['partie4'] += ('\n' if result['partie4'] else '') + clean4
 
     return result
 
