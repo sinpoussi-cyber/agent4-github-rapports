@@ -1380,9 +1380,8 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
     if _src_doc is not None:
         parties_chart = _extract_parties(_src_doc, ticker)
 
-        # PARTIE 1 en premier : analyse statistique du cours sur 100 jours
+        # PARTIE 1 en premier : analyse statistique du cours sur 100 jours (sans titre)
         if parties_chart.get('p1'):
-            _sub_heading(doc, "PARTIE 1 — Analyse du cours (statistiques & évolution 100 jours)")
             p_p1 = doc.add_paragraph()
             p_p1.paragraph_format.space_before = Pt(1)
             p_p1.paragraph_format.space_after  = Pt(4)
@@ -1390,9 +1389,8 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
             r_p1 = p_p1.add_run(parties_chart['p1'])
             r_p1.font.size = Pt(9)
 
-        # PARTIE 0 après : valorisation boursière (PER, BPA, P/B, EV/EBITDA)
+        # PARTIE 0 après : valorisation boursière (sans titre)
         if parties_chart.get('p0'):
-            _sub_heading(doc, "PARTIE 0 — Indicateurs de valorisation boursière")
             p_p0 = doc.add_paragraph()
             p_p0.paragraph_format.space_before = Pt(1)
             p_p0.paragraph_format.space_after  = Pt(4)
@@ -1563,7 +1561,6 @@ def build_technical_analysis(doc, s: dict):
         _ticker2 = _s(s, "ticker", "?")
         parties2 = _extract_parties(_src_doc2, _ticker2)
         if parties2.get('p2'):
-            _sub_heading(doc, "PARTIE 2 — Analyse technique détaillée (source rapport)")
             p_p2 = doc.add_paragraph()
             p_p2.paragraph_format.space_before = Pt(2)
             p_p2.paragraph_format.space_after  = Pt(4)
