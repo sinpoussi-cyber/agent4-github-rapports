@@ -2217,6 +2217,150 @@ def _aggregate_ratios_by_sector(sector_map: dict, company_ratios: list) -> dict:
     return out
 
 
+
+
+def _extract_all_company_data(source_doc) -> list:
+    """
+    Parcourt toutes les sections sociétés dans le rapport source et extrait :
+    - Ticker, Nom court, Secteur
+    - PER, ROA, Liquidité générale, Ratio endettement
+    - Bêta numérique réel
+    - Capitalisation boursière (numérique)
+    Retourne list[dict], 1 dict par société.
+    """
+    import re as _re2
+    elements = list(source_doc.element.body.iterchildren())
+
+    def _ps(el):
+        pPr = el.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
+        return pPr.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '') if pPr is not None else ''
+
+    def _pt2(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+
+    def _dd(s):
+        n = len(s)
+        for d in (3, 2):
+            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
+        return s
+
+    def _rt(tbl_el):
+        rows = []
+        for tr in tbl_el.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
+            cells = [_dd(''.join(n.text or '' for n in tc.iter() if n.text).strip())
+                     for tc in tr.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc')]
+            if cells: rows.append(cells)
+        return rows
+
+    def _fnum(s, pct=False):
+        """Parse un nombre (avec ou sans %)."""
+        if not s or s in ('—', '', 'N/A', 'null'): return None
+        s2 = str(s).replace('%', '').replace(' ', '').replace('\u00a0', '')
+        s2 = s2.replace('\u202f', '').strip()
+        # Format français : virgule décimale
+        if ',' in s2 and '.' not in s2: s2 = s2.replace(',', '.')
+        elif ',' in s2 and '.' in s2: s2 = s2.replace(',', '')
+        try: return float(s2)
+        except (ValueError, TypeError): return None
+
+    rx_h2 = _re2.compile(r'^\s*(\d+)\.\s*([A-Z]{2,6})\s*[-—]')
+    companies = []
+    current = None
+    current_end = None
+
+    # Trouver toutes les sections sociétés
+    sections = []
+    for i, child in enumerate(elements):
+        if child.tag.split('}')[-1] != 'p': continue
+        s = _ps(child); t = _dd(_pt2(child).strip())
+        if s in ('Titre2', 'Heading2'):
+            m = rx_h2.match(t)
+            if m:
+                sections.append((i, m.group(2), t))
+
+    for sec_i, (idx, ticker, title) in enumerate(sections):
+        next_idx = sections[sec_i + 1][0] if sec_i + 1 < len(sections) else min(idx + 180, len(elements))
+        entry = {
+            'ticker': ticker,
+            'nom': _dd(title.split('-')[-1].strip())[:50] if '-' in title else ticker,
+            'per': None, 'roa': None, 'liquidite': None,
+            'endettement': None, 'beta': None, 'capi': None,
+        }
+
+        for i in range(idx, next_idx):
+            child = elements[i]
+            tag = child.tag.split('}')[-1]
+
+            if tag == 'p':
+                txt = _dd(_pt2(child).strip())
+                # Capitalisation depuis la table identité (texte ou table)
+                if entry['capi'] is None and 'capitalisation' in txt.lower():
+                    m_capi = _re2.search(r'capitalisation[^:]*:\s*([\d\s,\.]+)\s*(Mds|milliards|M|millions)?', txt, _re2.IGNORECASE)
+                    if m_capi:
+                        v = _fnum(m_capi.group(1).replace(' ', ''))
+                        unit = (m_capi.group(2) or '').lower()
+                        if v:
+                            if 'mds' in unit or 'milliards' in unit: v *= 1
+                            elif 'm' in unit or 'millions' in unit: v /= 1000
+                            entry['capi'] = v
+                # PER depuis les paragraphes narratifs (PARTIE 0, table identité)
+                if entry['per'] is None and 'PER' in txt:
+                    m_per = _re2.search(r'\bPER\s+(?:de\s+)?([0-9]+[,\.][0-9]+)x?', txt, _re2.IGNORECASE)
+                    if not m_per:
+                        m_per = _re2.search(r'\bPER\b[^0-9]*([0-9]+[,\.][0-9]+)', txt)
+                    if m_per:
+                        v = _fnum(m_per.group(1))
+                        if v and 0 < v < 200: entry['per'] = v
+                # ROA depuis les paragraphes
+                if entry['roa'] is None and 'ROA' in txt:
+                    m_roa = _re2.search(r'\bROA\b[^0-9%]*([0-9]+[,\.][0-9]+)\s*%?', txt)
+                    if m_roa:
+                        v = _fnum(m_roa.group(1))
+                        if v and 0 < v < 100: entry['roa'] = v
+
+            elif tag == 'tbl':
+                data = _rt(child)
+                if not data: continue
+
+                # Table score risque → bêta numérique
+                full = str(data)
+                if ('êta' in full or 'Bêt' in full) and entry['beta'] is None:
+                    for row in data:
+                        cell = ' '.join(row)
+                        m_b = _re2.search(r'β\s*=\s*([-]?[\d.,]+)', cell)
+                        if m_b:
+                            entry['beta'] = _fnum(m_b.group(1))
+                            break
+
+                # Table identité → capitalisation
+                if len(data[0]) >= 3 and 'IDENTITÉ' in str(data[0]):
+                    for row in data:
+                        cell_txt = ' '.join(row)
+                        if 'capitalisation' in cell_txt.lower() and entry['capi'] is None:
+                            m_c = _re2.search(r'(\d+[\d\s,\.]+)\s*(Mds|Mrd|milliards)', cell_txt, _re2.IGNORECASE)
+                            if m_c:
+                                v = _fnum(m_c.group(1).replace(' ', ''))
+                                if v: entry['capi'] = v
+
+                # Tables financières → PER, ROA, liquidité, endettement
+                if len(data[0]) >= 2 and data[0][0] == 'Indicateur':
+                    for row in data[1:]:
+                        if len(row) < 2: continue
+                        ind = row[0].lower()
+                        val = row[1] if len(row) > 1 else ''
+                        if 'per' in ind and entry['per'] is None:
+                            entry['per'] = _fnum(val)
+                        elif 'roa' == ind.strip() and entry['roa'] is None:
+                            entry['roa'] = _fnum(val)
+                        elif 'liquidité générale' in ind and entry['liquidite'] is None:
+                            entry['liquidite'] = _fnum(val)
+                        elif ('ratio endett' in ind or 'endettement' in ind) and entry['endettement'] is None:
+                            entry['endettement'] = _fnum(val)
+
+        companies.append(entry)
+
+    return [c for c in companies if c['ticker']]
+
+
 def _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets):
     """Section 11 — Analyse financière comparative par secteur."""
     _heading(doc, "ANALYSE FINANCIÈRE COMPARATIVE PAR SECTEUR")
@@ -2392,6 +2536,228 @@ def _section_analyse_financiere_sectorielle(doc, source_doc, source_buckets):
           "La sélection des titres doit s'appuyer sur la combinaison ROE élevé + marge nette positive "
           "+ croissance du CA, tout en restant attentif aux niveaux de valorisation (PER) qui "
           "conditionnent le potentiel de réappréciation à moyen terme.")
+
+    # ── Données enrichies depuis le rapport source ────────────────────────────
+    all_co = _extract_all_company_data(source_doc)
+    all_co_valid = [c for c in all_co if c.get('ticker')]
+
+    # ── 1. Comparaison ROE, ROA, Liquidité, Endettement ──────────────────────
+    _heading(doc, "Comparaison ROE, ROA, Liquidité & Endettement", 2)
+    _para(doc,
+          "Indicateurs de rentabilité et de structure financière par société, "
+          "extraits des états financiers officiels publiés dans le rapport source.", 9)
+
+    roe_data = sorted(
+        [(c['ticker'], c['roa'], c.get('liquidite'), c.get('endettement'))
+         for c in all_co_valid if c.get('roa') is not None],
+        key=lambda x: x[1] or 0, reverse=True
+    )
+    # Tableau comparatif ROE/ROA/Liquidité/Endettement (depuis _scan_company_ratio_tables)
+    tbl_roe = doc.add_table(rows=1, cols=5)
+    tbl_roe.style = "Table Grid"
+    _tbl_header(tbl_roe, ["Société", "ROA (%)", "Liquidité gén. (%)", "Endettement (%)", "Signal"], "1A237E", "FFFFFF")
+
+    def _fmt_pct(v):
+        if v is None: return "—"
+        return f"{v:.1f}%"
+
+    def _risk_color_val(v, seuil_vert, seuil_rouge, inverse=False):
+        if v is None: return "F5F5F5"
+        if not inverse:
+            if v >= seuil_vert: return "C6EFCE"
+            if v <= seuil_rouge: return "FFC7CE"
+        else:
+            if v <= seuil_vert: return "C6EFCE"
+            if v >= seuil_rouge: return "FFC7CE"
+        return "FFEB9C"
+
+    for ticker, roa, liq, endet in roe_data[:20]:  # top 20 par ROA
+        sig = "✅" if (roa or 0) > 5 else ("⚠️" if (roa or 0) > 1 else "🔴")
+        tr = tbl_roe.add_row()
+        tr.cells[0].text = ticker
+        tr.cells[1].text = _fmt_pct(roa)
+        tr.cells[2].text = _fmt_pct(liq)
+        tr.cells[3].text = _fmt_pct(endet)
+        tr.cells[4].text = sig
+        _cell_bg(tr.cells[1], _risk_color_val(roa, 5, 1))
+        _cell_bg(tr.cells[2], _risk_color_val(liq, 120, 80))
+        _cell_bg(tr.cells[3], _risk_color_val(endet, 60, 80, inverse=True))
+        for cell in tr.cells:
+            for p in cell.paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(8.5)
+    doc.add_paragraph()
+
+    # ── 2. Section Risque ─────────────────────────────────────────────────────
+    _heading(doc, "Section Risque — Vue d'ensemble", 2)
+    _para(doc,
+          "Classement des sociétés par score de risque calculé (agrège volatilité, bêta, "
+          "liquidité, divergence signaux et stabilité des rendements). "
+          "Score 0 = risque nul, 100 = risque maximal.", 9)
+
+    risk_data = sorted(
+        [(c['ticker'], c.get('beta')) for c in all_co_valid if c.get('beta') is not None],
+        key=lambda x: abs(x[1]) if x[1] is not None else 0, reverse=True
+    )
+
+    # Copier le tableau risque depuis le bucket source (déjà dans la section récap risques)
+    # Mais ici on fait un résumé plus concis : top risqués + top sûrs
+    recap_blocks = source_buckets.get("recap_risques", [])
+    if recap_blocks:
+        # Copier les tables importantes (vue d'ensemble + top 5 chaque côté)
+        n_tbl = 0
+        for kind, el in recap_blocks:
+            if kind == "tbl" and n_tbl < 3:  # vue d'ensemble + top5 risqués + top5 sûrs
+                _copy_source_table(doc, el, header_bg="1A237E", header_fg="FFFFFF", max_rows=10)
+                doc.add_paragraph()
+                n_tbl += 1
+    else:
+        _para(doc, "Données de risque non disponibles dans le rapport source.", 9)
+
+    # ── 3. Classement PER ─────────────────────────────────────────────────────
+    _heading(doc, "Classement PER — Meilleurs et mauvais PER du marché", 2)
+    _para(doc,
+          "PER = Cours / BPA. Un PER faible peut indiquer une sous-valorisation, "
+          "un PER élevé une surévaluation ou des attentes de forte croissance. "
+          "Seules les sociétés avec un PER positif et disponible sont classées.", 9)
+
+    per_data = [(c['ticker'], c['per']) for c in all_co_valid
+                if c.get('per') is not None and c['per'] > 0]
+    per_data.sort(key=lambda x: x[1])
+
+    if per_data:
+        # Tableau top 10 meilleurs PER + top 10 mauvais
+        top_per = per_data[:10]
+        bad_per = per_data[-10:][::-1]
+
+        tbl_per = doc.add_table(rows=1, cols=4)
+        tbl_per.style = "Table Grid"
+        _tbl_header(tbl_per, ["Rang", "Société", "PER", "Signal"], "1A237E", "FFFFFF")
+
+        _para(doc, "🟢 Meilleurs PER (sous-évaluation potentielle)", 9)
+        for rank, (ticker, per_v) in enumerate(top_per, 1):
+            tr = tbl_per.add_row()
+            tr.cells[0].text = str(rank)
+            tr.cells[1].text = ticker
+            tr.cells[2].text = f"{per_v:.1f}x"
+            sig = "🟢 Attractif" if per_v < 8 else ("🟡 Correct" if per_v < 15 else "🔴 Cher")
+            tr.cells[3].text = sig
+            _cell_bg(tr.cells[2], "C6EFCE" if per_v < 8 else ("FFEB9C" if per_v < 15 else "FFC7CE"))
+            for cell in tr.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs: run.font.size = Pt(8.5)
+        doc.add_paragraph()
+
+        _para(doc, "🔴 PER les plus élevés (surévaluation potentielle)", 9)
+        tbl_per2 = doc.add_table(rows=1, cols=4)
+        tbl_per2.style = "Table Grid"
+        _tbl_header(tbl_per2, ["Rang", "Société", "PER", "Signal"], "D93025", "FFFFFF")
+        for rank, (ticker, per_v) in enumerate(bad_per, 1):
+            tr = tbl_per2.add_row()
+            tr.cells[0].text = str(rank)
+            tr.cells[1].text = ticker
+            tr.cells[2].text = f"{per_v:.1f}x"
+            sig = "🟢 Attractif" if per_v < 8 else ("🟡 Correct" if per_v < 15 else "🔴 Cher")
+            tr.cells[3].text = sig
+            _cell_bg(tr.cells[2], "C6EFCE" if per_v < 8 else ("FFEB9C" if per_v < 15 else "FFC7CE"))
+            for cell in tr.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs: run.font.size = Pt(8.5)
+        doc.add_paragraph()
+
+        # Tableau classement complet par PER
+        _heading(doc, "Classement complet par PER", 3)
+        tbl_per3 = doc.add_table(rows=1, cols=3)
+        tbl_per3.style = "Table Grid"
+        _tbl_header(tbl_per3, ["Rang", "Société", "PER"], "283593", "FFFFFF")
+        for rank, (ticker, per_v) in enumerate(per_data, 1):
+            tr = tbl_per3.add_row()
+            tr.cells[0].text = str(rank)
+            tr.cells[1].text = ticker
+            tr.cells[2].text = f"{per_v:.1f}x"
+            bg = "C6EFCE" if per_v < 8 else ("FFEB9C" if per_v < 15 else "FFC7CE")
+            _cell_bg(tr.cells[2], bg)
+            for cell in tr.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs: run.font.size = Pt(8.5)
+        _para(doc, f"{len(per_data)} sociétés avec PER disponible sur {len(all_co_valid)}.", 8)
+        doc.add_paragraph()
+    else:
+        _para(doc, "Données PER non disponibles dans ce rapport.", 9)
+
+    # ── 4. Classement Capitalisation ─────────────────────────────────────────
+    _heading(doc, "Classement par Capitalisation Boursière", 2)
+    _para(doc,
+          "Classement des sociétés par capitalisation boursière décroissante "
+          "(en milliards FCFA). Source : rapport source BRVM.", 9)
+
+    capi_data = sorted(
+        [(c['ticker'], c['capi']) for c in all_co_valid if c.get('capi') is not None and c['capi'] > 0],
+        key=lambda x: x[1], reverse=True
+    )
+
+    if capi_data:
+        tbl_capi = doc.add_table(rows=1, cols=3)
+        tbl_capi.style = "Table Grid"
+        _tbl_header(tbl_capi, ["Rang", "Société", "Capitalisation (Mds FCFA)"], "1A237E", "FFFFFF")
+        for rank, (ticker, capi_v) in enumerate(capi_data, 1):
+            tr = tbl_capi.add_row()
+            tr.cells[0].text = str(rank)
+            tr.cells[1].text = ticker
+            tr.cells[2].text = f"{capi_v:,.0f}".replace(",", " ")
+            bg = "C6EFCE" if capi_v > 500 else ("FFEB9C" if capi_v > 50 else "F5F5F5")
+            _cell_bg(tr.cells[2], bg)
+            for cell in tr.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs: run.font.size = Pt(8.5)
+        _para(doc, f"{len(capi_data)} sociétés avec capitalisation disponible.", 8)
+        doc.add_paragraph()
+    else:
+        _para(doc, "Données de capitalisation non disponibles.", 9)
+
+    # ── 5. Classement Bêta ────────────────────────────────────────────────────
+    _heading(doc, "Classement par Bêta (β) — Sensibilité au marché", 2)
+    _para(doc,
+          "Bêta = sensibilité du titre aux mouvements du BRVM Composite. "
+          "β>1 = plus volatile que le marché (agressif). "
+          "β≈1 = neutre. β<1 = défensif. β<0 = contre-cyclique.", 9)
+
+    beta_ranked = sorted(
+        [(c['ticker'], c['beta']) for c in all_co_valid if c.get('beta') is not None],
+        key=lambda x: x[1]
+    )
+
+    if beta_ranked:
+        tbl_beta = doc.add_table(rows=1, cols=4)
+        tbl_beta.style = "Table Grid"
+        _tbl_header(tbl_beta, ["Rang", "Société", "Bêta (β)", "Profil"], "1A237E", "FFFFFF")
+        for rank, (ticker, beta_v) in enumerate(beta_ranked, 1):
+            tr = tbl_beta.add_row()
+            tr.cells[0].text = str(rank)
+            tr.cells[1].text = ticker
+            tr.cells[2].text = f"{beta_v:.4f}"
+            if beta_v < 0:
+                profil = "🔵 Contre-cyclique"; bg = "E8F0FB"
+            elif beta_v < 0.5:
+                profil = "🟢 Très défensif"; bg = "C6EFCE"
+            elif beta_v < 0.8:
+                profil = "🟢 Défensif"; bg = "EBF7EE"
+            elif beta_v < 1.2:
+                profil = "🟡 Neutre"; bg = "FFEB9C"
+            elif beta_v < 1.5:
+                profil = "🟠 Agressif"; bg = "FFE0B2"
+            else:
+                profil = "🔴 Très agressif"; bg = "FFC7CE"
+            tr.cells[3].text = profil
+            _cell_bg(tr.cells[2], bg)
+            _cell_bg(tr.cells[3], bg)
+            for cell in tr.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs: run.font.size = Pt(8.5)
+        _para(doc, f"{len(beta_ranked)} sociétés avec bêta numérique disponible.", 8)
+        doc.add_paragraph()
+    else:
+        _para(doc, "Données bêta non disponibles.", 9)
 
 
 # ── Build complet ─────────────────────────────────────────────────────────────
