@@ -15,6 +15,11 @@ from claude_analyzer import analyze
 from report_generator import generate
 from generate_note_strategique import generate as generate_note
 from generate_fiches_societes import generate as generate_fiches
+try:
+    from brvm_generateur_rapports import generate_all as generate_rapports_derives
+    _GENERATEUR_DISPONIBLE = True
+except ImportError:
+    _GENERATEUR_DISPONIBLE = False
 from email_sender import send_report
 
 load_dotenv()
@@ -293,6 +298,56 @@ def cmd_rapport(type_rapport):
                 log(f"AVERTISSEMENT : échec fiches sociétés : {e}")
         else:
             log("AVERTISSEMENT : doc1_bytes_b64 absent — pièces jointes ignorées.")
+
+        # ── Étape 3/3 : Rapports dérivés (7 destinataires + 2 e-mails suggérés) ──
+        if doc1_b64 and _GENERATEUR_DISPONIBLE:
+            log("[Pipeline] Étape 3/3 : Génération des rapports dérivés (7 destinataires)...")
+            try:
+                import tempfile, os
+                with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+                    tmp.write(doc1_bytes)
+                    tmp_source = tmp.name
+                out_dir = tempfile.mkdtemp(prefix="brvm_derives_")
+                result = generate_rapports_derives(tmp_source, out_dir)
+                os.unlink(tmp_source)
+
+                # Joindre les 7 rapports Word dérivés
+                derives_count = 0
+                for fname, size_kb in result["files"]:
+                    fpath = os.path.join(out_dir, fname)
+                    if os.path.exists(fpath):
+                        with open(fpath, 'rb') as f:
+                            attachments.append({
+                                "filename": fname,
+                                "data": f.read()
+                            })
+                        derives_count += 1
+
+                log(f"[Pipeline] {derives_count} rapport(s) dérivé(s) générés.")
+
+                # QC : signaler les anomalies
+                qc_failures = [q for q in result["qc_reports"] if not q["ok"]]
+                if qc_failures:
+                    log(f"[Pipeline] ⚠ QC : {len(qc_failures)} rapport(s) avec occurrences "
+                        f"de reco : {[q['dest'] for q in qc_failures]}")
+                else:
+                    log("[Pipeline] ✓ QC : 0 occurrence de recommandation dans BRVM_Interne et Régulateur.")
+
+                for q in result["qc_reports"]:
+                    for anomaly in q.get("anomalies", []):
+                        log(f"[Pipeline] {anomaly}")
+
+                # Afficher les e-mails en suggestion dans les logs (jamais envoyés automatiquement)
+                for fname, email_content in result.get("emails", {}).items():
+                    if "[BLOQUÉ" in email_content:
+                        log(f"[Pipeline] ⚠ E-MAIL BLOQUÉ ({fname}) : {email_content[:200]}")
+                    else:
+                        log(f"[Pipeline] --- SUGGESTION E-MAIL : {fname} (à valider) ---")
+                        for line in email_content.split("\n")[:8]:
+                            log(f"[Pipeline]   {line}")
+
+            except Exception as e:
+                log(f"AVERTISSEMENT : échec rapports dérivés : {e}")
 
     log("Envoi de l'email...")
     ok = send_report(
