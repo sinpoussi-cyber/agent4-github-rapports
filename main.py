@@ -303,7 +303,7 @@ def cmd_rapport(type_rapport):
         if doc1_b64 and _GENERATEUR_DISPONIBLE:
             log("[Pipeline] Étape 3/3 : Génération des rapports dérivés (7 destinataires)...")
             try:
-                import tempfile, os
+                import tempfile
                 with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
                     tmp.write(doc1_bytes)
                     tmp_source = tmp.name
