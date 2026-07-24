@@ -6,8 +6,8 @@ Stratégie    : cascade automatique — essaie dans l'ordre, fallback sur erreur
 
 Variables d'environnement requises (au moins une) :
   ANTHROPIC_API_KEY   — Claude Sonnet (primaire)
-  GEMINI_API_KEY      — Gemini 1.5 Pro (fallback 1)
-  DEEPSEEK_API_KEY    — DeepSeek Chat (fallback 2, idéal JSON structuré)
+  GEMINI_API_KEY      — Gemini 2.5 Flash (fallback 1)
+  DEEPSEEK_API_KEY    — DeepSeek V4 Flash (fallback 2, idéal JSON structuré)
   MISTRAL_API_KEY     — Mistral Large (fallback 3, bon support français)
 """
 
@@ -20,11 +20,14 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # ── Modèles par fournisseur ───────────────────────────────────────────────────
+# MàJ 2026-07 :
+#   - gemini-1.5-pro  → arrêté (404). Remplacé par gemini-2.5-flash.
+#   - deepseek-chat   → alias retiré le 24/07/2026. Remplacé par deepseek-v4-flash.
 
 MODELS = {
     "anthropic": "claude-sonnet-4-20250514",
-    "gemini":    "gemini-1.5-pro",
-    "deepseek":  "deepseek-chat",
+    "gemini":    "gemini-2.5-flash",
+    "deepseek":  "deepseek-v4-flash",
     "mistral":   "mistral-large-latest",
 }
 
@@ -68,17 +71,22 @@ def _call_anthropic(prompt: str, max_tokens: int, system: Optional[str]) -> str:
 
 
 def _call_gemini(prompt: str, max_tokens: int, system: Optional[str]) -> str:
-    import google.generativeai as genai
-    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-    model = genai.GenerativeModel(
-        MODELS["gemini"],
-        system_instruction=system or "Tu es un expert financier BRVM spécialisé en analyse boursière UEMOA.",
+    # Nouveau SDK : google-genai (l'ancien google.generativeai n'est plus maintenu).
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    config = types.GenerateContentConfig(
+        system_instruction=system
+        or "Tu es un expert financier BRVM spécialisé en analyse boursière UEMOA.",
+        max_output_tokens=max_tokens,
     )
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.GenerationConfig(max_output_tokens=max_tokens),
+    response = client.models.generate_content(
+        model=MODELS["gemini"],
+        contents=prompt,
+        config=config,
     )
-    return response.text.strip()
+    return (response.text or "").strip()
 
 
 def _call_deepseek(prompt: str, max_tokens: int, system: Optional[str]) -> str:
