@@ -80,6 +80,10 @@ def _call_gemini(prompt: str, max_tokens: int, system: Optional[str]) -> str:
         system_instruction=system
         or "Tu es un expert financier BRVM spécialisé en analyse boursière UEMOA.",
         max_output_tokens=max_tokens,
+        # Gemini 2.5 Flash active le "thinking" par défaut, et ces tokens de
+        # réflexion sont décomptés de max_output_tokens → réponse vide si le
+        # budget est modeste. On désactive le thinking pour garantir la sortie.
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
     response = client.models.generate_content(
         model=MODELS["gemini"],
