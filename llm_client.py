@@ -21,12 +21,14 @@ logger = logging.getLogger(__name__)
 
 # ── Modèles par fournisseur ───────────────────────────────────────────────────
 # MàJ 2026-07 :
-#   - gemini-1.5-pro  → arrêté (404). Remplacé par gemini-2.5-flash.
+#   - gemini-1.5-pro  → arrêté (404).
+#   - gemini-2.5-flash → « no longer available to new users » (404).
+#     Remplacé par gemini-3.5-flash-lite (GA, bon marché, idéal extraction JSON).
 #   - deepseek-chat   → alias retiré le 24/07/2026. Remplacé par deepseek-v4-flash.
 
 MODELS = {
     "anthropic": "claude-sonnet-4-20250514",
-    "gemini":    "gemini-2.5-flash",
+    "gemini":    "gemini-3.5-flash-lite",
     "deepseek":  "deepseek-v4-flash",
     "mistral":   "mistral-large-latest",
 }
@@ -80,10 +82,10 @@ def _call_gemini(prompt: str, max_tokens: int, system: Optional[str]) -> str:
         system_instruction=system
         or "Tu es un expert financier BRVM spécialisé en analyse boursière UEMOA.",
         max_output_tokens=max_tokens,
-        # Gemini 2.5 Flash active le "thinking" par défaut, et ces tokens de
-        # réflexion sont décomptés de max_output_tokens → réponse vide si le
-        # budget est modeste. On désactive le thinking pour garantir la sortie.
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
+        # Les modèles Gemini 3.x activent le "thinking" par défaut, dont les tokens
+        # sont décomptés de max_output_tokens → réponse vide si le budget est modeste.
+        # Pour l'extraction/classification à haut volume, on force le niveau minimal.
+        thinking_config=types.ThinkingConfig(thinking_level="minimal"),
     )
     response = client.models.generate_content(
         model=MODELS["gemini"],
@@ -159,6 +161,12 @@ def call(
         try:
             logger.info("[LLM] Appel %s (model=%s, max_tokens=%d)", p, MODELS[p], max_tokens)
             result = _CALLERS[p](prompt, max_tokens, system)
+            # Une réponse vide (0 caractère utile) NE doit pas être considérée comme
+            # un succès : certains modèles (raisonnement) renvoient un contenu vide
+            # quand le budget de tokens est consommé par la réflexion. On force alors
+            # le passage au fournisseur suivant au lieu de renvoyer "".
+            if not result or not result.strip():
+                raise RuntimeError("réponse vide (0 caractère)")
             logger.info("[LLM] Succès %s — %d chars", p, len(result))
             print(f"  [LLM] ✓ {p} ({MODELS[p]}) — {len(result)} chars")
             return result
