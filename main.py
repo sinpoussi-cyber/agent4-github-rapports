@@ -22,6 +22,18 @@ except ImportError:
     _GENERATEUR_DISPONIBLE = False
 from email_sender import send_report
 
+# ── Archivage durable + synthèse de période (modules optionnels) ─────────────
+try:
+    import archive_store
+    _ARCHIVE_DISPONIBLE = True
+except Exception:
+    _ARCHIVE_DISPONIBLE = False
+try:
+    from period_synthesis import build_synthesis_text, insert_synthesis, build_annual_note
+    _SYNTHESE_DISPONIBLE = True
+except Exception:
+    _SYNTHESE_DISPONIBLE = False
+
 load_dotenv()
 
 GH_REPO = os.getenv("GH_REPO", "sinpoussi/mon-repo")
@@ -168,6 +180,18 @@ def cmd_collect():
     log(f"Clés disponibles : {list(doc1.keys())}")
     log(f"Document 1 : {doc1['nom']} ({doc1['date_run']})")
     log(f"Document 2 : {doc2['nom']} ({doc2['date_run']})")
+
+    # ── Archivage durable du rapport journalier source (idempotent par date) ──
+    # Les artefacts GitHub Actions expirent (90 j max) ; on conserve une copie
+    # dans le dépôt pour bâtir des rapports mensuels/annuels fiables.
+    # N'altère JAMAIS le rapport quotidien : échec = simple avertissement.
+    if _ARCHIVE_DISPONIBLE:
+        try:
+            path, action = archive_store.archive_daily_report(
+                doc1["nom"], doc1["contenu_bytes"], doc1.get("date_run"))
+            log(f"Rapport journalier archivé ({action}) : {path}")
+        except Exception as e:
+            log(f"AVERTISSEMENT : archivage rapport journalier échoué : {e}")
 
     log("Comparaison des documents...")
     diff_data = compare_documents(doc1["contenu_bytes"], doc2["contenu_bytes"])
@@ -322,43 +346,82 @@ def cmd_rapport(type_rapport):
 
 # ── Mode note + fiches multi-fréquences ──────────────────────────────────────
 
-def cmd_note_fiches(freq: str):
-    """Télécharge N docs, génère note stratégique + fiches sociétés, envoie un email."""
-    log(f"=== MODE NOTE-FICHES — {freq} ===")
+# ── Sélection de période (mois/année cibles) ────────────────────────────────
+# Par défaut on traite la période COMPLÈTE précédente (le job tourne le 1er) :
+#   - mensuel  → le mois qui vient de se terminer
+#   - annuel   → l'année qui vient de se terminer
+# Surcharge possible pour rejeu/backfill via ARCHIVE_TARGET_YEAR / _MONTH.
 
-    n_map = {"HEBDO": 7, "MENSUEL": 30, "TRIM": 90}
+def _prev_month(today=None):
+    today = today or date.today()
+    prev_last = today.replace(day=1) - timedelta(days=1)
+    return prev_last.year, prev_last.month
 
-    if freq == "ANNUEL":
-        year = datetime.now(timezone.utc).year
-        log(f"Téléchargement de tous les rapports Word de l'année {year}...")
-        rapports = get_year_word_reports(year=year, repo_name=GH_REPO)
+
+def _target_month():
+    y = os.getenv("ARCHIVE_TARGET_YEAR")
+    m = os.getenv("ARCHIVE_TARGET_MONTH")
+    if y and m:
+        return int(y), int(m)
+    return _prev_month()
+
+
+def _target_year():
+    y = os.getenv("ARCHIVE_TARGET_YEAR")
+    return int(y) if y else date.today().year - 1
+
+
+def _order_docs(rapports):
+    """Retourne (docs_asc, docs_recent_first) en normalisant l'ordre par date_run
+    quand elle est disponible (l'archive est croissante, get_latest décroissant)."""
+    if all(r.get("date_run") is not None for r in rapports):
+        asc = sorted(rapports, key=lambda r: r["date_run"])
     else:
-        n = n_map.get(freq, 1)
-        log(f"Téléchargement des {n} derniers rapports Word...")
-        rapports = get_latest_word_reports(repo_name=GH_REPO, n=n)
+        asc = list(rapports)
+    docs_asc = [r["contenu_bytes"] for r in asc]
+    return docs_asc, list(reversed(docs_asc))
 
-    if not rapports:
-        log("ERREUR : aucun rapport disponible. Abandon.")
-        sys.exit(1)
 
-    log(f"{len(rapports)} rapport(s) disponible(s).")
-    docs_bytes_list = [r["contenu_bytes"] for r in rapports]
-    pi = _period_info(freq, rapports)
-
-    nb_fiches = 0
+def _produce_and_send(freq, docs_recent_first, docs_asc, pi, rapports_count,
+                      archive_month=None):
+    """Génère note (+ synthèse d'évolution) et fiches, archive la note si demandé,
+    puis envoie l'email. `docs_recent_first` : plus récent en premier (contrat des
+    générateurs). `docs_asc` : ancien→récent (pour la synthèse d'évolution)."""
     attachments = []
+    nb_fiches = 0
 
     log(f"[Pipeline] Étape 1/2 : Note Stratégique BRVM ({freq})...")
     try:
-        note_filename, note_bytes = generate_note(docs_bytes_list, freq, pi)
+        note_filename, note_bytes = generate_note(docs_recent_first, freq, pi)
+
+        # Synthèse d'ÉVOLUTION sur toute la période (additive, jamais bloquante).
+        if _SYNTHESE_DISPONIBLE and len(docs_asc) > 1:
+            try:
+                synth = build_synthesis_text(docs_asc, freq, pi, is_notes=False)
+                note_bytes = insert_synthesis(note_bytes, synth, freq, pi)
+                if synth:
+                    log(f"Synthèse d'évolution insérée dans la note ({len(synth)} chars).")
+            except Exception as e:
+                log(f"AVERTISSEMENT : synthèse note ignorée : {e}")
+
         attachments.append({"filename": note_filename, "data": note_bytes})
         log(f"Note générée : {note_filename}")
+
+        # Archivage de la note mensuelle (brique du rapport annuel).
+        if archive_month and _ARCHIVE_DISPONIBLE:
+            try:
+                ay, am = archive_month
+                path, action = archive_store.archive_monthly_note(
+                    note_bytes, ay, am, nom=note_filename)
+                log(f"Note mensuelle archivée ({action}) : {path}")
+            except Exception as e:
+                log(f"AVERTISSEMENT : archivage note mensuelle échoué : {e}")
     except Exception as e:
         log(f"AVERTISSEMENT : échec note stratégique : {e}")
 
     log(f"[Pipeline] Étape 2/2 : Fiches Sociétés ({freq}) — Extraction LLM → Enrichissement → Word...")
     try:
-        fiches = generate_fiches(docs_bytes_list, freq, pi)
+        fiches = generate_fiches(docs_recent_first, freq, pi)
         nb_fiches = len(fiches)
         log(f"[Pipeline] {nb_fiches} société(s) extraite(s) → {nb_fiches} fiche(s) générée(s).")
         for fname, fbytes in fiches:
@@ -371,7 +434,7 @@ def cmd_note_fiches(freq: str):
         sys.exit(1)
 
     subject = _note_fiches_subject(freq, pi)
-    body_html = _note_fiches_html(freq, pi, len(rapports), nb_fiches)
+    body_html = _note_fiches_html(freq, pi, rapports_count, nb_fiches)
 
     log(f"Envoi de l'email : {subject}")
     ok = send_report(subject, body_html, attachments=attachments)
@@ -380,6 +443,104 @@ def cmd_note_fiches(freq: str):
     else:
         log("ERREUR : échec de l'envoi de l'email.")
         sys.exit(1)
+
+
+def _note_fiches_generic(freq: str):
+    """HEBDO / TRIM : derniers N artefacts (comportement historique) + synthèse."""
+    log(f"=== MODE NOTE-FICHES — {freq} ===")
+    n = {"HEBDO": 7, "TRIM": 90}.get(freq, 7)
+    log(f"Téléchargement des {n} derniers rapports Word...")
+    rapports = get_latest_word_reports(repo_name=GH_REPO, n=n)
+    if not rapports:
+        log("ERREUR : aucun rapport disponible. Abandon.")
+        sys.exit(1)
+    log(f"{len(rapports)} rapport(s) disponible(s).")
+    docs_asc, docs_recent_first = _order_docs(rapports)
+    pi = _period_info(freq, rapports)
+    _produce_and_send(freq, docs_recent_first, docs_asc, pi, len(rapports))
+
+
+def _note_fiches_mensuel():
+    """MENSUEL : UNIQUEMENT les rapports journaliers du mois civil concerné,
+    lus depuis l'archive durable. Archive ensuite la note produite."""
+    freq = "MENSUEL"
+    year, month = _target_month()
+    log(f"=== MODE NOTE-FICHES — MENSUEL ({year}-{month:02d}) ===")
+
+    rapports = []
+    if _ARCHIVE_DISPONIBLE:
+        try:
+            rapports = archive_store.get_daily_reports_for_month(year, month)
+            log(f"{len(rapports)} rapport(s) journalier(s) archivé(s) pour {year}-{month:02d}.")
+        except Exception as e:
+            log(f"AVERTISSEMENT : lecture de l'archive échouée : {e}")
+
+    if not rapports:
+        log("Archive vide/indisponible — repli sur les 30 derniers artefacts.")
+        rapports = get_latest_word_reports(repo_name=GH_REPO, n=30)
+    if not rapports:
+        log("ERREUR : aucun rapport disponible. Abandon.")
+        sys.exit(1)
+
+    docs_asc, docs_recent_first = _order_docs(rapports)
+    pi = _period_info(freq, rapports)
+    _produce_and_send(freq, docs_recent_first, docs_asc, pi, len(rapports),
+                      archive_month=(year, month))
+
+
+def _note_fiches_annuel():
+    """ANNUEL : basé sur les 12 notes mensuelles archivées de l'année concernée."""
+    year = _target_year()
+    log(f"=== MODE NOTE-FICHES — ANNUEL ({year}) ===")
+
+    notes = []
+    if _ARCHIVE_DISPONIBLE:
+        try:
+            notes = archive_store.get_monthly_notes_for_year(year)
+            log(f"{len(notes)} note(s) mensuelle(s) archivée(s) pour {year}.")
+        except Exception as e:
+            log(f"AVERTISSEMENT : lecture des notes mensuelles échouée : {e}")
+
+    if not notes:
+        log("ERREUR : aucune note mensuelle archivée pour l'année demandée. "
+            "Le rapport annuel s'appuie sur les notes mensuelles "
+            "(voir mode note-fiches-mensuel). Abandon.")
+        sys.exit(1)
+
+    if not _SYNTHESE_DISPONIBLE:
+        log("ERREUR : module de synthèse indisponible (period_synthesis). Abandon.")
+        sys.exit(1)
+
+    pi = {
+        "date_debut": f"01/01/{year}",
+        "date_fin": f"31/12/{year}",
+        "nb_seances": len(notes),
+        "freq_label": "ANNUELLE",
+        "annee": year,
+    }
+
+    log("Construction de la note annuelle à partir des notes mensuelles...")
+    note_filename, note_bytes = build_annual_note(notes, year, pi)
+    attachments = [{"filename": note_filename, "data": note_bytes}]
+
+    subject = _note_fiches_subject("ANNUEL", pi)
+    body_html = _note_fiches_html("ANNUEL", pi, len(notes), 0)
+    log(f"Envoi de l'email : {subject}")
+    ok = send_report(subject, body_html, attachments=attachments)
+    if ok:
+        log("Email annuel envoyé avec succès.")
+    else:
+        log("ERREUR : échec de l'envoi de l'email.")
+        sys.exit(1)
+
+
+def cmd_note_fiches(freq: str):
+    """Aiguille vers le bon pipeline selon la fréquence."""
+    if freq == "MENSUEL":
+        return _note_fiches_mensuel()
+    if freq == "ANNUEL":
+        return _note_fiches_annuel()
+    return _note_fiches_generic(freq)
 
 
 # ── Point d'entrée ───────────────────────────────────────────────────────────
