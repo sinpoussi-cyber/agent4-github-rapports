@@ -29,7 +29,8 @@ try:
 except Exception:
     _ARCHIVE_DISPONIBLE = False
 try:
-    from period_synthesis import build_synthesis_text, insert_synthesis, build_annual_note
+    from period_synthesis import (build_synthesis_text, insert_synthesis,
+                                   build_annual_note, build_period_report)
     _SYNTHESE_DISPONIBLE = True
 except Exception:
     _SYNTHESE_DISPONIBLE = False
@@ -390,19 +391,15 @@ def _produce_and_send(freq, docs_recent_first, docs_asc, pi, rapports_count,
     attachments = []
     nb_fiches = 0
 
-    log(f"[Pipeline] Étape 1/2 : Note Stratégique BRVM ({freq})...")
+    log(f"[Pipeline] Étape 1/2 : Rapport {freq} — synthèse par section (évolution)...")
     try:
-        note_filename, note_bytes = generate_note(docs_recent_first, freq, pi)
-
-        # Synthèse d'ÉVOLUTION sur toute la période (additive, jamais bloquante).
-        if _SYNTHESE_DISPONIBLE and len(docs_asc) > 1:
-            try:
-                synth = build_synthesis_text(docs_asc, freq, pi, is_notes=False)
-                note_bytes = insert_synthesis(note_bytes, synth, freq, pi)
-                if synth:
-                    log(f"Synthèse d'évolution insérée dans la note ({len(synth)} chars).")
-            except Exception as e:
-                log(f"AVERTISSEMENT : synthèse note ignorée : {e}")
+        if _SYNTHESE_DISPONIBLE:
+            # Rapport structuré : reprend TOUTES les sections du journalier,
+            # chacune résumée avec son évolution sur la période.
+            note_filename, note_bytes = build_period_report(docs_asc, freq, pi)
+        else:
+            # Repli : ancien comportement (reformatage du dernier jour).
+            note_filename, note_bytes = generate_note(docs_recent_first, freq, pi)
 
         attachments.append({"filename": note_filename, "data": note_bytes})
         log(f"Note générée : {note_filename}")
@@ -519,8 +516,10 @@ def _note_fiches_annuel():
         "annee": year,
     }
 
-    log("Construction de la note annuelle à partir des notes mensuelles...")
-    note_filename, note_bytes = build_annual_note(notes, year, pi)
+    log("Construction du rapport annuel (synthèse par section) à partir des notes mensuelles...")
+    notes_asc = sorted(notes, key=lambda n: n["nom"])
+    docs_asc = [n["contenu_bytes"] for n in notes_asc]
+    note_filename, note_bytes = build_period_report(docs_asc, "ANNUEL", pi, is_notes=True)
     attachments = [{"filename": note_filename, "data": note_bytes}]
 
     subject = _note_fiches_subject("ANNUEL", pi)
