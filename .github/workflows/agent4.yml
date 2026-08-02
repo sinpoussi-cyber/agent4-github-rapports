@@ -1,5 +1,10 @@
 name: Agent 4 — GitHub Rapports Word
 
+# Nécessaire pour l'archivage : les commits sont faits via GH_TOKEN_PAT (API),
+# ce bloc autorise aussi GITHUB_TOKEN en écriture si vous basculez dessus.
+permissions:
+  contents: write
+
 on:
   schedule:
     - cron: '0 6 * * *'          # collect+rapport-jour — tous les jours à 6h UTC (8h Abidjan)
