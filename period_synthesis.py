@@ -277,3 +277,241 @@ def build_annual_note(monthly_notes, year, period_info=None):
     doc.save(buf)
     filename = f"Note_Strategique_BRVM_ANNUEL_{year}.docx"
     return filename, buf.getvalue()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  RAPPORT STRUCTURÉ PAR SECTION — reprend TOUTES les parties du rapport
+#  journalier, chacune résumée avec son évolution sur la période.
+#  Les titres sont rendus en style "Heading1" (comme le rapport source), donc
+#  un rapport annuel peut re-parser les rapports mensuels de la même façon
+#  (récursion jour → semaine/mois → année).
+# ══════════════════════════════════════════════════════════════════════════════
+
+from docx.oxml.ns import qn  # noqa: E402
+
+# Doit rester IDENTIQUE aux ancres de generate_note_strategique.py (même ordre,
+# pour reproduire la précédence de détection des sections).
+_SOURCE_ANCHORS = {
+    "synthese":           "SYNTHÈSE GÉNÉRALE",
+    "secteurs":           "ANALYSE PAR SECTEUR",
+    "matrice_signaux":    "MATRICE DE CONVERGENCE DES SIGNAUX",
+    "liquidite":          "ANALYSE DE LIQUIDITÉ",
+    "top_divergences":    "TOP 10 DES DIVERGENCES MAJEURES",
+    "matrice_risque":     "MATRICE RISQUE vs HORIZON",
+    "macro":              "ANALYSE MACRO",
+    "macro_actu":         "1. ACTUALITÉS MACRO",
+    "macro_pol":          "2. ACTUALITÉS POLITIQUES",
+    "macro_fin":          "3. ACTUALITÉS FINANCIÈRES",
+    "macro_synth":        "SYNTHÈSE & RECOMMANDATION FINALE",
+    "actualites":         "ACTUALITÉS DU MARCHÉ BRVM",
+    "classement":         "CLASSEMENT DES SOCIÉTÉS",
+    "portefeuilles":      "PORTEFEUILLES MODÈLES",
+    "alertes":            "ALERTES DU JOUR",
+    "recap_risques":      "RÉCAPITULATIF DES RISQUES",
+    "toc_detail":         "TABLE DES MATIÈRES - ANALYSES DÉTAILLÉES",
+    "predictions":        "PRÉDICTIONS",
+    "analyse_financiere": "ANALYSE FINANCIÈRE",
+}
+
+# Sections rendues dans le rapport périodique (ordre du rapport journalier).
+# On saute la table des matières (navigation).
+_ORDERED_SECTIONS = [
+    ("synthese",           "SYNTHÈSE GÉNÉRALE"),
+    ("secteurs",           "ANALYSE PAR SECTEUR"),
+    ("matrice_signaux",    "MATRICE DE CONVERGENCE DES SIGNAUX"),
+    ("liquidite",          "ANALYSE DE LIQUIDITÉ"),
+    ("top_divergences",    "TOP 10 DES DIVERGENCES MAJEURES"),
+    ("matrice_risque",     "MATRICE RISQUE vs HORIZON"),
+    ("macro",              "ANALYSE MACRO"),
+    ("macro_actu",         "1. ACTUALITÉS MACRO"),
+    ("macro_pol",          "2. ACTUALITÉS POLITIQUES"),
+    ("macro_fin",          "3. ACTUALITÉS FINANCIÈRES"),
+    ("macro_synth",        "SYNTHÈSE & RECOMMANDATION FINALE"),
+    ("actualites",         "ACTUALITÉS DU MARCHÉ BRVM"),
+    ("classement",         "CLASSEMENT DES SOCIÉTÉS"),
+    ("portefeuilles",      "PORTEFEUILLES MODÈLES"),
+    ("alertes",            "ALERTES DU JOUR"),
+    ("recap_risques",      "RÉCAPITULATIF DES RISQUES"),
+    ("predictions",        "PRÉDICTIONS"),
+    ("analyse_financiere", "ANALYSE FINANCIÈRE"),
+]
+
+_FREQ_TITLE = {"HEBDO": "HEBDOMADAIRE", "MENSUEL": "MENSUEL",
+               "TRIM": "TRIMESTRIEL", "ANNUEL": "ANNUEL"}
+
+
+# ── Découpage par section (réplique exacte de _split_source_by_h1) ────────────
+
+def _para_style_val(p_elem):
+    pPr = p_elem.find(qn("w:pPr"))
+    if pPr is None:
+        return ""
+    pStyle = pPr.find(qn("w:pStyle"))
+    return pStyle.get(qn("w:val")) if pStyle is not None else ""
+
+
+def _para_text_xml(p_elem):
+    return "".join(t.text for t in p_elem.iter(qn("w:t")) if t.text)
+
+
+def _tbl_text_xml(tbl_elem):
+    lines = []
+    for tr in tbl_elem.iter(qn("w:tr")):
+        cells = []
+        for tc in tr.iter(qn("w:tc")):
+            txt = "".join(t.text for t in tc.iter(qn("w:t")) if t.text).strip()
+            if txt:
+                cells.append(txt)
+        if cells:
+            lines.append(" | ".join(cells))
+    return "\n".join(lines)
+
+
+def _split_by_h1_text(doc):
+    """{anchor_key: texte_aplati} — même logique de détection que le module source
+    (paragraphe de style 'Heading1' contenant l'ancre)."""
+    body = doc.element.body
+    buckets = {k: [] for k in _SOURCE_ANCHORS}
+    current = None
+    for child in body.iterchildren():
+        tag = child.tag.split("}")[-1]
+        if tag not in ("p", "tbl"):
+            continue
+        if tag == "p" and _para_style_val(child) == "Heading1":
+            txt = _para_text_xml(child)
+            current = None
+            for k, anchor in _SOURCE_ANCHORS.items():
+                if anchor in txt:
+                    current = k
+                    break
+            continue
+        if current is not None:
+            t = _para_text_xml(child).strip() if tag == "p" else _tbl_text_xml(child)
+            if t:
+                buckets[current].append(t)
+    return {k: "\n".join(v) for k, v in buckets.items() if v}
+
+
+# ── Résumé d'une section sur la période ───────────────────────────────────────
+
+def _summarize_section(title, series, freq, periode, total):
+    """series : liste (position, texte_section). Retourne un résumé d'évolution."""
+    per_day = 1400
+    blocks = [f"[Point {i + 1}]\n{txt[:per_day]}" for i, (_pos, txt) in enumerate(series)]
+    corpus = "\n\n".join(blocks)[:16000]
+    prompt = f"""Tu es analyste financier de la BRVM (marché UEMOA). Voici la section
+« {title} » du rapport, capturée à {len(series)} dates de la période {periode}
+(ordre chronologique, sur {total} document(s)). Rédige un RÉSUMÉ de cette section
+pour la PÉRIODE, centré sur l'ÉVOLUTION : variations début→fin, tendances,
+indicateurs clés et leur progression, éléments apparus ou disparus. Reste factuel.
+4 à 8 lignes maximum, en français, sans markdown ni astérisques ; utilise «- » pour
+d'éventuelles puces.
+
+CONTENU CHRONOLOGIQUE :
+{corpus}
+"""
+    try:
+        return llm_call(
+            prompt, max_tokens=700,
+            system="Analyste BRVM/UEMOA. Résumé de section, évolution sur la période, factuel et concis.",
+        ).strip()
+    except Exception as e:
+        print(f"  [Section/{freq}] AVERTISSEMENT « {title} » : {e}")
+        return ""
+
+
+# ── Constructeur du rapport périodique structuré ──────────────────────────────
+
+def build_period_report(docs_bytes_asc, freq, period_info=None, is_notes=False):
+    """Construit un rapport {freq} reprenant TOUTES les sections du rapport
+    journalier, chacune résumée avec son évolution sur la période.
+    docs_bytes_asc : bytes .docx en ordre chronologique CROISSANT.
+    Retourne (filename, docx_bytes). Lève si aucun document."""
+    if not docs_bytes_asc:
+        raise ValueError("Aucun document fourni pour le rapport périodique.")
+
+    import io as _io
+    from datetime import date as _date
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    pi = period_info or {}
+    periode = f"{pi.get('date_debut', '?')} → {pi.get('date_fin', '?')}"
+    total = len(docs_bytes_asc)
+    max_days = {"HEBDO": 7, "MENSUEL": 10, "TRIM": 12, "ANNUEL": 12}.get(freq, 8)
+    idx = _sample(total, max_days)
+
+    parsed = []
+    for i in idx:
+        try:
+            parsed.append(_split_by_h1_text(Document(_io.BytesIO(docs_bytes_asc[i]))))
+        except Exception:
+            parsed.append({})
+
+    NAVY = RGBColor(0x1A, 0x23, 0x7E)
+    GREY = RGBColor(0x66, 0x66, 0x66)
+    doc = Document()
+
+    ftitle = _FREQ_TITLE.get(freq, freq)
+    t = doc.add_paragraph()
+    r = t.add_run(f"RAPPORT {ftitle} BRVM")
+    r.bold = True
+    r.font.size = Pt(18)
+    r.font.color.rgb = NAVY
+    t.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    quoi = "note(s) mensuelle(s)" if is_notes else "rapport(s) journalier(s)"
+    st = doc.add_paragraph()
+    rs = st.add_run(f"Synthèse par section — évolution sur la période   •   "
+                    f"{periode}   •   {total} {quoi}")
+    rs.font.size = Pt(10)
+    rs.font.color.rgb = GREY
+    st.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    st.paragraph_format.space_after = Pt(12)
+
+    # 1) Synthèse exécutive : tendances d'évolution sur la période
+    try:
+        exec_txt = build_synthesis_text(docs_bytes_asc, freq, pi, is_notes=is_notes)
+        if exec_txt:
+            _write_synthesis(doc, exec_txt, freq, pi)
+    except Exception as e:
+        print(f"  [Rapport/{freq}] AVERTISSEMENT synthèse exécutive : {e}")
+
+    # 2) Chaque section du rapport journalier, résumée avec évolution
+    n_sections = 0
+    for key, title in _ORDERED_SECTIONS:
+        series = [(pos, parsed[j].get(key, "").strip())
+                  for j, pos in enumerate(idx) if parsed[j].get(key, "").strip()]
+        if not series:
+            continue
+        summary = _summarize_section(title, series, freq, periode, total)
+
+        h = doc.add_paragraph(title)
+        h.style = doc.styles["Heading 1"]  # -> pStyle "Heading1" (re-parsable)
+
+        if summary:
+            for line in summary.splitlines():
+                line = line.rstrip()
+                if not line:
+                    continue
+                p = doc.add_paragraph()
+                p.add_run(line).font.size = Pt(10)
+                p.paragraph_format.space_after = Pt(1)
+        else:
+            p = doc.add_paragraph()
+            p.add_run("Résumé indisponible pour cette section.").italic = True
+        n_sections += 1
+
+    if n_sections == 0:
+        p = doc.add_paragraph()
+        p.add_run("Aucune section reconnue dans les documents source "
+                  "(vérifier la structure des rapports).").italic = True
+
+    stamp = str(pi.get("annee")) if (freq == "ANNUEL" and pi.get("annee")) \
+        else _date.today().strftime("%Y%m%d")
+    filename = f"Note_Strategique_BRVM_{freq}_{stamp}.docx"
+
+    buf = _io.BytesIO()
+    doc.save(buf)
+    return filename, buf.getvalue()
