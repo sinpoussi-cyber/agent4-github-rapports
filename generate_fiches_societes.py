@@ -21,6 +21,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 from extractor import extract_all
 from enricher import enrich
+import coherence  # arbitre de cohérence (obligatoire — échec franc si absent)
 
 _MARGIN_CM = 1.5
 
@@ -1203,6 +1204,15 @@ def _build_context(docs_bytes: list, freq: str) -> str:
 # FONCTIONS DE CONSTRUCTION DE LA FICHE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _ind_emoji(s: dict, key: str) -> str:
+    """Emoji d'indicateur pour l'en-tête, cohérent avec le surachat/survente :
+    RSI/Stochastique en zone extrême → 🟡 (prudence) au lieu de 🟢."""
+    ov = _tech_overbought_override(s, key)
+    if ov is not None:
+        return ov[0]
+    return _signal_emoji(_s(s, key))
+
+
 def build_header(doc, s: dict, date_str: str):
     """
     En-tête complet de la fiche :
@@ -1243,8 +1253,8 @@ def build_header(doc, s: dict, date_str: str):
         f"{_signal_emoji(_s(s, 'mm'))} MM",
         f"{_signal_emoji(_s(s, 'boll'))} Boll",
         f"{_signal_emoji(_s(s, 'macd'))} MACD",
-        f"{_signal_emoji(_s(s, 'rsi'))} RSI",
-        f"{_signal_emoji(_s(s, 'stoch'))} Stoch",
+        f"{_ind_emoji(s, 'rsi')} RSI",
+        f"{_ind_emoji(s, 'stoch')} Stoch",
     ])
     r1.cells[2].merge(r1.cells[3])
     _cw(r1.cells[2], ind, size=9, bg="E8EAF6")
@@ -1685,9 +1695,15 @@ def build_technical_analysis(doc, s: dict):
     if synthese and synthese not in ("", "—"):
         _narrative(doc, synthese, italic=True)
 
-    signals_raw = [_s(s, k) for k in ("mm", "boll", "macd", "rsi", "stoch")]
+    # RSI/Stoch en surachat/survente ne comptent PAS comme signal directionnel :
+    # « élevé » sur un oscillateur = prudence, pas achat.
+    def _eff_sig(k):
+        if k in ("rsi", "stoch") and _tech_overbought_override(s, k) is not None:
+            return "neutre"
+        return _s(s, k)
+    signals_raw = [_eff_sig(k) for k in ("mm", "boll", "macd", "rsi", "stoch")]
     pos = sum(1 for sg in signals_raw if any(
-        w in str(sg).lower() for w in ("haussier", "positif", "achat", "élevé")))
+        w in str(sg).lower() for w in ("haussier", "positif", "achat")))
     neg = sum(1 for sg in signals_raw if any(
         w in str(sg).lower() for w in ("baissier", "négatif", "negatif", "vente")))
     neu = len(signals_raw) - pos - neg
@@ -1813,9 +1829,7 @@ def build_fundamental_analysis(doc, s: dict):
     # PARTIE 3 (analyse fondamentale source) n'est plus affichée ici : elle
     # l'est une seule fois dans build_analyse_fondamentale_partie3(). Bloc retiré.
 
-    persp = _s(s, "perspectives")
-    if persp and persp not in ("", "—"):
-        _key_bloc(doc, "PERSPECTIVES :", persp, "E8F8F0", "155724")
+    # Perspectives : désormais dans la section dédiée build_perspectives().
 
 
 def build_financial_analysis(doc, s: dict):
@@ -2765,6 +2779,10 @@ def _extract_risk_narrative(source_doc, ticker: str) -> list:
         if s in ('Titre2', 'Heading2', 'Titre3', 'Heading3'): continue
         txt = _dd(_pt(child).strip())
         if not txt or len(txt) < 20: continue
+        # Exclure l'en-tête « SCORE DE RISQUE » et la barre ASCII : déjà affichés
+        # proprement dans le bloc score, et souvent mal formés (runs entrelacés).
+        _up = txt.upper()
+        if 'SCORE DE RISQUE' in _up or '█' in txt or '░' in txt: continue
         if not any(k in txt.lower() for k in risk_keywords): continue
 
         sentences = re.split(r'(?<=[.!?])\s+', txt)
@@ -3118,6 +3136,111 @@ def _extract_source_indicators(source_doc, ticker: str) -> dict:
     return result
 
 
+def _extract_interim_perspectives(source_doc, ticker):
+    """Extrait de la section source du ticker : (1) les publications intermédiaires
+    T1 / S1 / T3 (date, CA, résultat net quand présents), (2) le bloc « Perspectives ».
+    Best-effort, sans LLM. Retourne {'interim': {t1,s1,t3}, 'perspectives': str|None}."""
+    out = {"interim": {"t1": None, "s1": None, "t3": None}, "perspectives": None}
+    try:
+        st, en, els = _extract_company_section(source_doc, ticker)
+    except Exception:
+        return out
+    if st is None:
+        return out
+    def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
+    paras = [_dedup(_pt(els[i]).strip()) for i in range(st, en)
+             if els[i].tag.split('}')[-1] == 'p']
+    blob = "\n".join(p for p in paras if p)
+    if not blob:
+        return out
+
+    # Perspectives : privilégier le marqueur « 🔮 Perspectives : »
+    mp = re.search(r"🔮\s*Perspectives\s*:?\s*(.+)", blob, re.I | re.S)
+    if not mp:
+        mp = re.search(r"(?:^|\n)\s*Perspectives\s*:?\s*(.+)", blob, re.I | re.S)
+    if mp:
+        txt = re.split(r"\n\s*(?:PARTIE\s+\d|#{1,})", mp.group(1))[0]
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if len(txt) >= 40:
+            out["perspectives"] = txt[:800]
+
+    # Interim : phrases mentionnant un rapport T1 / S1 / T3
+    periodes = {
+        "t1": r"\bT1\b|1er\s+trimestre|premier\s+trimestre",
+        "s1": r"\bS1\b|1er\s+semestre|premier\s+semestre|semestriel",
+        "t3": r"\bT3\b|3e\s+trimestre|troisi[èe]me\s+trimestre|9\s*mois|neuf\s+mois",
+    }
+    sentences = re.split(r'(?<=[.!?])\s+', blob)
+    for key, pat in periodes.items():
+        for sent in sentences:
+            if not re.search(pat, sent):
+                continue
+            if not re.search(r"rapport|résultat|chiffre\s+d'affaires|\bCA\b|publi", sent, re.I):
+                continue
+            info = {"commentaire": re.sub(r"\s+", " ", sent).strip()[:240]}
+            m = re.search(r"publi[ée]\s+en\s+([A-Za-zûôéèà]+\s+\d{4})", sent, re.I)
+            if m: info["publication"] = m.group(1)
+            m = re.search(r"chiffre\s+d'affaires\s+de\s+([\d\s.,]+?\s*(?:milliards?|Mds|millions?)\s*FCFA)\s*\(([+\-]?\d+[.,]?\d*\s*%)\)", sent, re.I)
+            if m: info["ca"] = re.sub(r"\s+", " ", m.group(1)).strip() + f" ({m.group(2).replace(' ', '')})"
+            m = re.search(r"résultat\s+net\s+de\s+([\d\s.,]+?\s*(?:milliards?|Mds|millions?)\s*FCFA)\s*\(([+\-]?\d+[.,]?\d*\s*%)\)", sent, re.I)
+            if m: info["rn"] = re.sub(r"\s+", " ", m.group(1)).strip() + f" ({m.group(2).replace(' ', '')})"
+            out["interim"][key] = info
+            break
+    return out
+
+
+def build_resultats_intermediaires(doc, s: dict):
+    """Section dédiée aux publications financières intermédiaires (T1, S1, T3),
+    calendrier BRVM. Lit s['interim'] (structuré) ; « En attente de publication »
+    quand la période n'est pas encore parue."""
+    _section_heading(doc, "RÉSULTATS INTERMÉDIAIRES")
+    _narrative(doc,
+               "Publications trimestrielles et semestrielles de la société "
+               "(calendrier BRVM). Les périodes non encore parues sont signalées.",
+               size=8, italic=True, color="666666")
+
+    interim = s.get("interim") if isinstance(s.get("interim"), dict) else {}
+    slots = [("1er Trimestre (T1)", "t1"),
+             ("1er Semestre (S1)", "s1"),
+             ("3e Trimestre (T3 — 9 mois)", "t3")]
+
+    tbl = doc.add_table(rows=1, cols=5)
+    tbl.style = "Table Grid"
+    for i, h in enumerate(["Période", "Publication", "Chiffre d'affaires",
+                           "Résultat net", "Commentaire"]):
+        _cw(tbl.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
+
+    for label, key in slots:
+        info = interim.get(key) if isinstance(interim, dict) else None
+        row = tbl.add_row()
+        _cw(row.cells[0], label, bold=True, size=8, bg="EBF0FA")
+        if info:
+            _cw(row.cells[1], info.get("publication", "—"), size=8)
+            _cw(row.cells[2], info.get("ca", "—"), size=8,
+                bg="C6EFCE" if info.get("ca") else "FFFFFF")
+            _cw(row.cells[3], info.get("rn", "—"), size=8,
+                bg="C6EFCE" if info.get("rn") else "FFFFFF")
+            _cw(row.cells[4], (info.get("commentaire", "—") or "—")[:200], size=7)
+        else:
+            _cw(row.cells[1], "En attente", size=8, bg="F5F5F5")
+            _cw(row.cells[2], "—", size=8, bg="F5F5F5")
+            _cw(row.cells[3], "—", size=8, bg="F5F5F5")
+            _cw(row.cells[4], "Non encore publié (calendrier BRVM)", size=7, bg="F5F5F5")
+    doc.add_paragraph()
+
+
+def build_perspectives(doc, s: dict):
+    """Section dédiée aux perspectives de la société (lit s['perspectives'])."""
+    _section_heading(doc, "PERSPECTIVES")
+    persp = _s(s, "perspectives")
+    if persp and persp not in ("", "—", "null", "None"):
+        _narrative(doc, persp, size=9)
+    else:
+        _narrative(doc,
+                   "Perspectives non renseignées dans le rapport source pour cette période.",
+                   size=8, italic=True, color="666666")
+
+
 def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
                       period_info: dict = None,
                       images_map: dict | None = None,
@@ -3181,10 +3304,17 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
     # ── Backfill regex des champs manquants (sans LLM) ───────────────────────
     _backfill_missing(s, _parties)
 
+    # ── Résultats intermédiaires + perspectives (extraits du source si absents) ─
+    if source_doc is not None:
+        _ip = _extract_interim_perspectives(source_doc, ticker)
+        if not isinstance(s.get("interim"), dict):
+            s["interim"] = _ip["interim"]
+        if (not s.get("perspectives") or s.get("perspectives") in ("", "—")) and _ip["perspectives"]:
+            s["perspectives"] = _ip["perspectives"]
+
     # ── Arbitre de cohérence : tranche les valeurs finales avant génération ──
     if source_doc is not None:
         try:
-            import coherence
             coherence.arbitrate(s, _parties)
         except Exception as _e:
             print(f"  [Fiches] AVERTISSEMENT arbitre cohérence ({ticker}) : {_e}")
@@ -3203,9 +3333,13 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
     _add_separator(doc)
     build_financial_analysis(doc, s)         # Analyse financière détaillée
     _add_separator(doc)
+    build_resultats_intermediaires(doc, s)   # Résultats intermédiaires (T1 / S1 / T3)
+    _add_separator(doc)
     build_financial_data_complete(doc, s, source_doc)  # 📊 Données financières (copie source)
     _add_separator(doc)
     build_analyse_fondamentale_partie3(doc, s, source_doc)  # PARTIE 3 fondamentale
+    _add_separator(doc)
+    build_perspectives(doc, s)               # Perspectives (section dédiée)
     _add_separator(doc)
     build_conclusion(doc, s)                 # Conclusion : matrice + divergences + action
     _pied(doc, date_str, freq, period_info)
