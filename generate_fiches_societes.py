@@ -215,6 +215,167 @@ def _to_float(v):
         return None
 
 
+def _dedup(txt):
+    """Supprime la duplication (×2/×3) d'un texte source, en normalisant d'abord
+    les espaces — robuste aux triplements concaténés OU séparés par une espace."""
+    nrm = re.sub(r"\s+", " ", str(txt or "")).strip()
+    n = len(nrm)
+    if n == 0:
+        return nrm
+    for d in (3, 2):
+        # Cas concaténé : "ABCABCABC"
+        if n % d == 0 and nrm == nrm[: n // d] * d:
+            return nrm[: n // d]
+        # Cas séparé par une espace : "ABC ABC ABC"
+        if (n - (d - 1)) % d == 0:
+            L = (n - (d - 1)) // d
+            if L > 0 and " ".join([nrm[:L]] * d) == nrm:
+                return nrm[:L]
+    return nrm
+
+
+def _fmt_pct(v, decimals: int = 1, signed: bool = True) -> str:
+    """Format unifié des pourcentages : N décimales, signe explicite optionnel,
+    virgule décimale FR. Accepte nombre ou string ('+10.42%', '10,4')."""
+    if v is None:
+        return "—"
+    if isinstance(v, str):
+        raw = v.strip()
+        if raw in ("", "—", "N/D", "null", "None"):
+            return "—"
+        cleaned = (raw.replace("%", "").replace(" ", "").replace("\u00a0", "")
+                      .replace("+", ""))
+        if "," in cleaned and "." not in cleaned:
+            cleaned = cleaned.replace(",", ".")
+        elif "," in cleaned and "." in cleaned:
+            cleaned = cleaned.replace(",", "")
+        try:
+            f = float(cleaned)
+        except ValueError:
+            return raw
+    else:
+        try:
+            f = float(v)
+        except (ValueError, TypeError):
+            return "—"
+    sign = "+" if (signed and f > 0) else ""
+    return f"{sign}{f:.{decimals}f}%".replace(".", ",")
+
+
+def _compute_nb_actions(s: dict):
+    """Estime le nb d'actions = capitalisation / cours, en interprétant l'unité
+    de la capitalisation (Mds / M / brut) — sans facteur en dur."""
+    cours = _to_float(s.get("cours") or s.get("cours_fin"))
+    if not cours or cours <= 0:
+        return None
+    capi_raw = s.get("capitalisation_boursiere")
+    if capi_raw is None:
+        return None
+    unit = str(capi_raw).lower()
+    _m = re.search(r"[-+]?[\d\s.,]+", str(capi_raw))
+    capi = _to_float(_m.group(0)) if _m else None
+    if not capi or capi <= 0:
+        return None
+    if any(u in unit for u in ("md", "milliard")):
+        capi *= 1e9
+    elif any(u in unit for u in ("million", " m", "m.")) or unit.strip().endswith("m"):
+        capi *= 1e6
+    nb = capi / cours
+    if nb < 1000 or nb > 1e12:      # garde-fou anti-absurde
+        return None
+    return round(nb)
+
+
+def _backfill_missing(s: dict, parties: dict):
+    """Extraction de secours (regex) des champs vides, depuis les PARTIES 0-4
+    déjà en mémoire. Aucun appel LLM. Mute ``s`` en place."""
+    txt = " ".join(v for v in (parties or {}).values() if v)
+    if txt:
+        if not s.get("var_1j"):
+            m = re.search(r"(?:repli|recul|variation|baisse|hausse|progression|gain)"
+                          r"\s+de\s+([\-+]?\d+(?:[.,]\d+)?)\s*%", txt, re.I)
+            if m:
+                val = m.group(1).replace(",", ".")
+                if not val.startswith(("-", "+")) and re.search(r"repli|recul|baisse", txt, re.I):
+                    val = "-" + val
+                s["var_1j"] = val + "%"
+        if s.get("boll_inf") is None:
+            m = re.search(r"borne\s+inf[ée]rieure\s*\(?\s*([\d\s.,]+?)\s*FCFA", txt, re.I)
+            if m:
+                s["boll_inf"] = _to_float(m.group(1))
+        if s.get("boll_sup") is None:
+            m = re.search(r"borne\s+sup[ée]rieure\s*\(?\s*([\d\s.,]+?)\s*FCFA", txt, re.I)
+            if m:
+                s["boll_sup"] = _to_float(m.group(1))
+        if s.get("plus_haut_100j") is None:
+            m = re.search(r"plus\s+haut\s+(?:de\s+|:\s*)?([\d\s.,]+?)\s*FCFA", txt, re.I)
+            if m:
+                s["plus_haut_100j"] = _to_float(m.group(1))
+        if s.get("plus_bas_100j") is None:
+            m = re.search(r"plus\s+bas\s+(?:de\s+|:\s*)?([\d\s.,]+?)\s*FCFA", txt, re.I)
+            if m:
+                s["plus_bas_100j"] = _to_float(m.group(1))
+        if not s.get("dividende"):
+            m = re.search(r"dividende\s+(?:propos[ée]\s+de\s+|de\s+)?(\d[\d\s]*)\s*FCFA", txt, re.I)
+            if m:
+                s["dividende"] = re.sub(r"\s+", " ", m.group(1)).strip() + " FCFA"
+        if not s.get("rendement_dividende"):
+            m = re.search(r"rendement\s+(?:de\s+|du\s+dividende\s+(?:de\s+)?)?(\d+(?:[.,]\d+)?)\s*%", txt, re.I)
+            if m:
+                s["rendement_dividende"] = m.group(1).replace(",", ".") + "%"
+    if s.get("nb_actions") is None:
+        nb = _compute_nb_actions(s)
+        if nb:
+            s["nb_actions"] = nb
+
+
+def _tech_overbought_override(s: dict, sig_key: str):
+    """Pour RSI/Stochastique : renvoie (emoji, label, bg, detail) si l'indicateur
+    est en zone de surachat/survente, sinon None. Rend le tableau technique
+    cohérent avec le vrai sens de l'indicateur (au lieu de « Élevé 🟢 »)."""
+    if sig_key == "rsi":
+        v = _to_float(s.get("rsi_valeur"))
+        if v is None:
+            return None
+        if v > 70:
+            return ("🟡", "Surachat", "FFEB9C",
+                    f"RSI {_fmt_num(v, 1)} > 70 : signal de prudence (zone de surachat).")
+        if v < 30:
+            return ("🟡", "Survente", "FFEB9C",
+                    f"RSI {_fmt_num(v, 1)} < 30 : zone de survente, rebond possible.")
+        return None
+    if sig_key == "stoch":
+        k = _to_float(s.get("stoch_k"))
+        d = _to_float(s.get("stoch_d"))
+        vals = [x for x in (k, d) if x is not None]
+        if not vals:
+            return None
+        if any(x > 80 for x in vals):
+            return ("🟡", "Surachat", "FFEB9C",
+                    f"%K {_fmt_num(k, 1)} / %D {_fmt_num(d, 1)} > 80 : retournement possible.")
+        if any(x < 20 for x in vals):
+            return ("🟡", "Survente", "FFEB9C",
+                    f"%K {_fmt_num(k, 1)} / %D {_fmt_num(d, 1)} < 20 : zone de survente.")
+        return None
+    return None
+
+
+def qc_fiche(s: dict) -> list:
+    """Contrôle qualité post-génération (non bloquant). Renvoie la liste des
+    avertissements pour la société ``s``."""
+    warns = []
+    ticker = str(s.get("ticker") or "?")
+    for champ in ("var_1j", "plus_haut_100j", "plus_bas_100j", "cours"):
+        v = s.get(champ)
+        if v is None or str(v).strip() in ("", "—", "N/D"):
+            warns.append(f"{ticker}: champ critique vide après backfill → {champ}")
+    dsys = str(s.get("decision_systeme") or s.get("decision") or "").upper()
+    dsrc = str(s.get("decision_source") or "").upper()
+    if dsrc and dsys and dsrc != dsys:
+        warns.append(f"{ticker}: écart règles/source → système={dsys} / source={dsrc}")
+    return warns
+
+
 # ── Extraction des images depuis le document Word source ──────────────────────
 
 def _detect_img_type(blob: bytes) -> str:
@@ -1067,7 +1228,7 @@ def build_header(doc, s: dict, date_str: str):
     # ── Ligne 1 : identité
     r0 = tbl.rows[0]
     _cw(r0.cells[0], ticker, bold=True, size=15, color="FFFFFF", bg="1A237E")
-    _cw(r0.cells[1], nom[:48], size=9, color="E8EAF6", bg="1A237E")
+    _cw(r0.cells[1], nom, size=9, color="E8EAF6", bg="1A237E")
     _cw(r0.cells[2], secteur, size=8, color="C5CAE9", bg="283593")
     _cw(r0.cells[3], f"Rapport du {date_str}", size=8, color="C5CAE9", bg="283593",
         align=WD_ALIGN_PARAGRAPH.RIGHT)
@@ -1179,7 +1340,9 @@ def build_market_table(doc, s: dict):
     stab_bg = "C6EFCE" if "bonne" in str(stabilite).lower() else (
         "FFC7CE" if "fragile" in str(stabilite).lower() else "FFEB9C"
     )
-    div_bg = "FFEB9C" if divergence.lower() not in ("aucune", "—", "") else "FFFFFF"
+    _div_present = divergence.lower() not in ("aucune", "—", "", "none")
+    div_bg = "FFEB9C" if _div_present else "FFFFFF"
+    div_display = "⚠ oui" if _div_present else "aucune"
 
     pairs = [
         ("Cours actuel (FCFA)",       cours,      "F0F4FF"),
@@ -1192,7 +1355,7 @@ def build_market_table(doc, s: dict):
         ("Bêta",                      beta,       "FFFFFF"),
         ("Liquidité",                 liquidite,  "FFFFFF"),
         ("Niveau de risque",          risque,     risque_bg),
-        ("Divergence tech/fond",      divergence, div_bg),
+        ("Divergence tech/fond",      div_display, div_bg),
         ("Stabilité",                 stabilite,  stab_bg),
     ]
 
@@ -1289,7 +1452,7 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
     ticker      = _s(s, "ticker", "?")
     cours       = _to_float(s.get("cours") or s.get("cours_fin"))
     var_1j_raw  = _validate_var_1j(s.get("var_1j"))
-    perf_100j   = _s(s, "perf_100j", "—")
+    perf_100j   = _fmt_pct(s.get("perf_100j"))
     plus_haut   = _to_float(s.get("plus_haut_100j"))
     plus_bas    = _to_float(s.get("plus_bas_100j"))
     tendance    = _s(s, "tendance_100j", "neutre").lower()
@@ -1302,10 +1465,10 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
     dist_bas_str  = ""
     if cours and plus_haut and plus_haut > 0:
         d = (plus_haut - cours) / plus_haut * 100
-        dist_haut_str = f"{d:.1f}% sous le plus haut"
+        dist_haut_str = f"{_fmt_pct(d, signed=False)} sous le plus haut"
     if cours and plus_bas and plus_bas > 0:
         d = (cours - plus_bas) / plus_bas * 100
-        dist_bas_str  = f"{d:.1f}% au-dessus du plus bas"
+        dist_bas_str  = f"{_fmt_pct(d, signed=False)} au-dessus du plus bas"
 
     # ── Signal dominant ───────────────────────────────────────────────────────
     signals = [s.get(k) or "" for k in ("mm", "boll", "macd", "rsi", "stoch")]
@@ -1326,6 +1489,16 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
         signal_label = "signaux mixtes"
         signal_fg    = "E37400"
         signal_bg    = "FFF8E6"
+
+    # ── Override de cohérence (écrit par coherence.arbitrate) ─────────────────
+    # Ex. surachat malgré tendance haussière → bandeau jaune de prudence.
+    _ov_label = s.get("signal_label_override")
+    if _ov_label:
+        signal_label = _ov_label
+        if str(s.get("signal_override_kind") or "").lower() == "survente":
+            signal_fg, signal_bg = "C0392B", "FFF0E6"
+        else:
+            signal_fg, signal_bg = "7D6608", "FFEB9C"
 
     # ── Phrase de tendance (1 ligne max) ──────────────────────────────────────
     if "haussier" in tendance or "hausse" in tendance:
@@ -1378,7 +1551,7 @@ def build_chart_comment(doc, s: dict, source_png: bytes | None = None):
     # puis PARTIE 0 : Indicateurs de valorisation boursière
     _src_doc = s.get("_source_doc_ref")
     if _src_doc is not None:
-        parties_chart = _extract_parties(_src_doc, ticker)
+        parties_chart = s.get("_parties") or _extract_parties(_src_doc, ticker)
 
         # PARTIE 1 en premier : analyse statistique du cours sur 100 jours (sans titre)
         if parties_chart.get('p1'):
@@ -1492,11 +1665,18 @@ def build_technical_analysis(doc, s: dict):
         detail = _s(s, detail_key) or "—"
         emoji = _signal_emoji(signal)
         values_str = _tech_values_str(s, sig_key)
+        cell_bg = _signal_bg(signal)
+
+        # RSI/Stoch en surachat/survente : appréciation + couleur cohérentes
+        # avec le sens réel de l'indicateur (au lieu de « Élevé 🟢 »).
+        _ov = _tech_overbought_override(s, sig_key)
+        if _ov is not None:
+            emoji, sig_label, cell_bg, detail = _ov
 
         row = tbl.add_row()
         _cw(row.cells[0], f"{emoji}  {label}", bold=True, size=8, bg="EBF0FA")
-        _cw(row.cells[1], sig_label, size=8, bg=_signal_bg(signal))
-        _cw(row.cells[2], values_str, size=7, bg=_signal_bg(signal))
+        _cw(row.cells[1], sig_label, size=8, bg=cell_bg)
+        _cw(row.cells[2], values_str, size=7, bg=cell_bg)
         _cw(row.cells[3], detail[:120] if detail != "—" else "—", size=8)
 
     doc.add_paragraph()
@@ -1559,7 +1739,7 @@ def build_technical_analysis(doc, s: dict):
     _src_doc2 = s.get("_source_doc_ref")
     if _src_doc2 is not None:
         _ticker2 = _s(s, "ticker", "?")
-        parties2 = _extract_parties(_src_doc2, _ticker2)
+        parties2 = s.get("_parties") or _extract_parties(_src_doc2, _ticker2)
         if parties2.get('p2'):
             p_p2 = doc.add_paragraph()
             p_p2.paragraph_format.space_before = Pt(2)
@@ -1630,20 +1810,8 @@ def build_fundamental_analysis(doc, s: dict):
                   "  |  ".join(str(r) for r in risques[:3]),
                   "FFF0E6", "C0392B")
 
-    # ── PARTIE 3 : texte d'analyse fondamentale depuis le rapport source ─────
-    # (rapports trimestriels, tendances récentes, recommandation source)
-    _src_doc_f = s.get("_source_doc_ref")
-    if _src_doc_f is not None:
-        _ticker_f = _s(s, "ticker", "?")
-        parties_f = _extract_parties(_src_doc_f, _ticker_f)
-        if parties_f.get("p3"):
-            _sub_heading(doc, "Analyse fondamentale — données récentes (source rapport)")
-            p_f3 = doc.add_paragraph()
-            p_f3.paragraph_format.space_before = Pt(2)
-            p_f3.paragraph_format.space_after  = Pt(4)
-            p_f3.paragraph_format.alignment    = WD_ALIGN_PARAGRAPH.JUSTIFY
-            r_f3 = p_f3.add_run(parties_f["p3"])
-            r_f3.font.size = Pt(9)
+    # PARTIE 3 (analyse fondamentale source) n'est plus affichée ici : elle
+    # l'est une seule fois dans build_analyse_fondamentale_partie3(). Bloc retiré.
 
     persp = _s(s, "perspectives")
     if persp and persp not in ("", "—"):
@@ -1894,11 +2062,7 @@ def build_financial_data_complete(doc, s: dict, source_doc=None):
                     # Paragraphe titre de section (📌 1. BILAN...)
                     from docx.oxml.ns import qn as _qn2
                     txt_raw = ''.join(n.text or '' for n in el.iter() if n.text).strip()
-                    def _dd2(s):
-                        n=len(s)
-                        for d in (3,2):
-                            if n%d==0 and s==s[:n//d]*d: return s[:n//d]
-                        return s
+                    _dd2 = _dedup
                     txt = _dd2(txt_raw)
                     if not txt: continue
                     if 'DONNÉES FINANCIÈRES STRUCTURÉES' in txt.upper():
@@ -2069,7 +2233,7 @@ def build_analyse_fondamentale_partie3(doc, s: dict, source_doc=None):
     _section_heading(doc, "PARTIE 3 — Analyse fondamentale (section critique)")
     ticker = _s(s, "ticker", "?")
     if source_doc is not None:
-        parties3 = _extract_parties(source_doc, ticker)
+        parties3 = s.get("_parties") or _extract_parties(source_doc, ticker)
         if parties3.get('p3'):
             p = doc.add_paragraph()
             p.paragraph_format.space_before = Pt(2)
@@ -2101,7 +2265,7 @@ def build_conclusion(doc, s: dict):
     _src_indicators = s.get("_src_indicators") or {}
 
     if _src_doc_c is not None:
-        parties_c = _extract_parties(_src_doc_c, ticker_c)
+        parties_c = s.get("_parties") or _extract_parties(_src_doc_c, ticker_c)
         p4_text = parties_c.get('p4', '')
         if p4_text:
             p_s4 = doc.add_paragraph()
@@ -2126,7 +2290,7 @@ def build_conclusion(doc, s: dict):
     score_str = f"{score_f:.0f}" if s.get("score") is not None else "—"
     score_label, score_color = _score_label_color(score_f)
     reco = _s(s, "reco", "NEUTRE")
-    decision = _s(s, "decision", "SURVEILLER")
+    decision = _s(s, "decision_final", "") or _s(s, "decision", "SURVEILLER")
     risque = _s(s, "risque", "modéré")
     divergence = _s(s, "divergence", "aucune")
     confiance = _s(s, "confiance", "Modérée")
@@ -2144,6 +2308,10 @@ def build_conclusion(doc, s: dict):
     else:
         horizon = "Très court terme ou abstention"
         profil_inv = "Profil spéculatif — risque élevé"
+
+    # Horizon arbitré (PARTIE 4 source) prioritaire sur le calcul par score.
+    if s.get("horizon_final"):
+        horizon = str(s["horizon_final"])
 
     _sub_heading(doc, "1.  Matrice Risque × Horizon de placement")
 
@@ -2224,6 +2392,12 @@ def build_conclusion(doc, s: dict):
                f"{ticker} — Score {score_str}/100 ({score_label}). "
                f"Reco : {reco}. Confiance : {confiance}. "
                f"Risque : {risque} — Horizon : {horizon.lower()}.")
+
+    # Transparence système vs source (écrite par coherence.arbitrate).
+    _transp = _s(s, "reco_transparence")
+    if _transp and _transp not in ("", "—"):
+        _key_bloc(doc, "🔎  TRANSPARENCE DE LA RECOMMANDATION :", _transp,
+                  "EEF2FF", "1A237E")
 
     if resume and resume not in ("", "—"):
         _key_bloc(doc, "RÉSUMÉ :", resume, "E8F0FB", "1558A7")
@@ -2444,11 +2618,7 @@ def _extract_company_section(source_doc, ticker: str) -> tuple:
         pPr = el.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
         return pPr.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '') if pPr is not None else ''
     def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
-    def _dd(s):
-        n = len(s)
-        for d in (3, 2):
-            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
-        return s
+    _dd = _dedup
 
     ticker_start = None
     ticker_end   = None
@@ -2484,11 +2654,7 @@ def _extract_risk_score_data(source_doc, ticker: str) -> dict | None:
         return None
 
     def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
-    def _dd(s):
-        n = len(s)
-        for d in (3, 2):
-            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
-        return s
+    _dd = _dedup
     def _read_tbl(tbl_el):
         rows = []
         for tr in tbl_el.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
@@ -2549,11 +2715,7 @@ def _extract_cours_commentary(source_doc, ticker: str) -> str | None:
         return None
 
     def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
-    def _dd(s):
-        n = len(s)
-        for d in (3, 2):
-            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
-        return s
+    _dd = _dedup
 
     for i in range(ticker_start, ticker_end):
         child = elements[i]
@@ -2589,11 +2751,7 @@ def _extract_risk_narrative(source_doc, ticker: str) -> list:
     def _ps(el):
         pPr = el.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
         return pPr.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val','') if pPr is not None else ''
-    def _dd(s):
-        n = len(s)
-        for d in (3, 2):
-            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
-        return s
+    _dd = _dedup
 
     risk_keywords = ('risque', 'volatil', 'fragil', 'surveill', 'vigilance',
                      'attention', 'incertitude', 'faiblesse', 'endett',
@@ -2635,11 +2793,7 @@ def _extract_stabilite_rendements(source_doc, ticker: str) -> str | None:
         return None
 
     def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
-    def _dd(s):
-        n = len(s)
-        for d in (3, 2):
-            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
-        return s
+    _dd = _dedup
     def _read_tbl(tbl_el):
         rows = []
         for tr in tbl_el.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
@@ -2671,11 +2825,7 @@ def _extract_donnees_financieres_tables(source_doc, ticker: str) -> list:
         return []
 
     def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
-    def _dd(s):
-        n = len(s)
-        for d in (3, 2):
-            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
-        return s
+    _dd = _dedup
     def _ps(el):
         pPr = el.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
         return pPr.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '') if pPr is not None else ''
@@ -2743,11 +2893,7 @@ def _extract_parties(source_doc, ticker: str) -> dict:
         return {}
 
     def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
-    def _dd(s):
-        n = len(s)
-        for d in (3, 2):
-            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
-        return s
+    _dd = _dedup
 
     result = {'p0': '', 'p1': '', 'p2': '', 'p3': '', 'p4': ''}
     current_part = None
@@ -2815,11 +2961,7 @@ def _read_source_tbl_for_copy(tbl_el) -> list:
     Lit un tableau source et retourne ses données pour copie.
     Retourne list[list[str]] dédupliqué.
     """
-    def _dd(s):
-        n = len(s)
-        for d in (3, 2):
-            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
-        return s
+    _dd = _dedup
     rows = []
     for tr in tbl_el.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
         cells = [_dd(''.join(n.text or '' for n in tc.iter() if n.text).strip())
@@ -2846,11 +2988,7 @@ def _extract_source_indicators(source_doc, ticker: str) -> dict:
         return {}
 
     def _pt(el): return ''.join(n.text or '' for n in el.iter() if n.text)
-    def _dd(s):
-        n = len(s)
-        for d in (3, 2):
-            if n % d == 0 and s == s[:n//d]*d: return s[:n//d]
-        return s
+    _dd = _dedup
     def _read_tbl(tbl_el):
         rows = []
         for tr in tbl_el.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
@@ -3035,6 +3173,22 @@ def _build_fiche_docx(s: dict, date_str: str, freq: str = "JOUR",
             if s.get(_s_key) is None and _si.get(_i_key) is not None:
                 s[_s_key] = _si[_i_key]
 
+    # ── PARTIES 0-4 : cache unique réutilisé par les build_* (perf + cohérence) ─
+    if source_doc is not None and s.get("_parties") is None:
+        s["_parties"] = _extract_parties(source_doc, ticker)
+    _parties = s.get("_parties") or {}
+
+    # ── Backfill regex des champs manquants (sans LLM) ───────────────────────
+    _backfill_missing(s, _parties)
+
+    # ── Arbitre de cohérence : tranche les valeurs finales avant génération ──
+    if source_doc is not None:
+        try:
+            import coherence
+            coherence.arbitrate(s, _parties)
+        except Exception as _e:
+            print(f"  [Fiches] AVERTISSEMENT arbitre cohérence ({ticker}) : {_e}")
+
     build_header(doc, s, date_str)           # En-tête : ticker, score, reco, indicateurs
     _add_separator(doc)
     build_market_table(doc, s)               # Métriques de marché
@@ -3153,6 +3307,8 @@ def generate(docs_bytes, freq: str = "JOUR", period_info: dict = None) -> list:
             results.append((filename, docx_bytes))
             img_status = "✓ graphique source Word" if has_source_img else "~ graphique matplotlib"
             print(f"  [Fiches/{freq}] ✓ {filename}  [{img_status}]")
+            for _w in qc_fiche(company):
+                print(f"  [Fiches/QC] ⚠ {_w}")
         except Exception as e:
             print(f"  [Fiches/{freq}] AVERTISSEMENT : fiche {ticker} ignorée — {e}")
 
