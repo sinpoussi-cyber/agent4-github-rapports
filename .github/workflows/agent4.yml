@@ -5,16 +5,23 @@ name: Agent 4 — GitHub Rapports Word
 permissions:
   contents: write
 
+# Sérialise les exécutions : empêche un run (ex. note-fiches du soir) de
+# chevaucher un run encore en cours (rapport du matin) — évite les courses
+# sur les commits git et les pics de quota API. Les runs en trop patientent.
+concurrency:
+  group: agent4-rapports
+  cancel-in-progress: false
+
 on:
   schedule:
     - cron: '0 6 * * *'          # collect+rapport-jour — tous les jours à 6h UTC (8h Abidjan)
     - cron: '0 7 * * 1'          # rapport-hebdo        — tous les lundis à 7h UTC
     - cron: '0 7 1 * *'          # rapport-mensuel     — le 1er du mois à 7h UTC
     - cron: '0 8 1 1 *'          # rapport-annuel      — le 1er janvier à 8h UTC
-    - cron: '0 7 * * 1'          # note-fiches-hebdo   — tous les lundis à 7h UTC (9h Abidjan)
-    - cron: '0 7 1 * *'          # note-fiches-mensuel — le 1er du mois à 7h UTC (9h Abidjan)
-    - cron: '0 7 1 1,4,7,10 *'   # note-fiches-trim    — 1er jan/avr/jul/oct à 7h UTC (9h Abidjan)
-    - cron: '0 7 1 1 *'          # note-fiches-annuel  — le 1er janvier à 7h UTC (9h Abidjan)
+    - cron: '0 20 * * 1'         # note-fiches-hebdo   — tous les lundis à 20h UTC (après rapport-hebdo de 7h)
+    - cron: '0 20 1 * *'         # note-fiches-mensuel — le 1er du mois à 20h UTC (après rapport-mensuel de 7h)
+    - cron: '0 21 1 1,4,7,10 *'  # note-fiches-trim    — 1er jan/avr/jul/oct à 21h UTC (après note-fiches-mensuel)
+    - cron: '0 22 1 1 *'         # note-fiches-annuel  — le 1er janvier à 22h UTC (après note-fiches-trim)
   workflow_dispatch:
     inputs:
       mode:
@@ -286,7 +293,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-hebdo'
-      || github.event_name == 'schedule' && github.event.schedule == '0 7 * * 1'
+      || github.event_name == 'schedule' && github.event.schedule == '0 20 * * 1'
 
     steps:
       - name: Checkout
@@ -333,7 +340,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-mensuel'
-      || github.event_name == 'schedule' && github.event.schedule == '0 7 1 * *'
+      || github.event_name == 'schedule' && github.event.schedule == '0 20 1 * *'
 
     steps:
       - name: Checkout
@@ -374,13 +381,13 @@ jobs:
       - name: Générer et envoyer Note + Fiches Mensuelles
         run: python main.py note-fiches-mensuel
 
-  # ── NOTE + FICHES TRIM — 1er jan/avr/jul/oct à 20h UTC ───────────────────
+  # ── NOTE + FICHES TRIM — 1er jan/avr/jul/oct à 21h UTC ───────────────────
   note-fiches-trim:
     name: Note + Fiches Trimestrielles — Envoi email
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-trim'
-      || github.event_name == 'schedule' && github.event.schedule == '0 7 1 1,4,7,10 *'
+      || github.event_name == 'schedule' && github.event.schedule == '0 21 1 1,4,7,10 *'
 
     steps:
       - name: Checkout
@@ -421,13 +428,13 @@ jobs:
       - name: Générer et envoyer Note + Fiches Trimestrielles
         run: python main.py note-fiches-trim
 
-  # ── NOTE + FICHES ANNUEL — 1er janvier à 21h UTC ─────────────────────────
+  # ── NOTE + FICHES ANNUEL — 1er janvier à 22h UTC ─────────────────────────
   note-fiches-annuel:
     name: Note + Fiches Annuelles — Envoi email
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'note-fiches-annuel'
-      || github.event_name == 'schedule' && github.event.schedule == '0 7 1 1 *'
+      || github.event_name == 'schedule' && github.event.schedule == '0 22 1 1 *'
 
     steps:
       - name: Checkout
