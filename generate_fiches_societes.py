@@ -3136,9 +3136,74 @@ def _extract_source_indicators(source_doc, ticker: str) -> dict:
     return result
 
 
+def _strip_md(t):
+    """Retire le markdown résiduel (**gras**, #, `code`) du texte source."""
+    return re.sub(r"[*#`]+", "", str(t or "")).strip()
+
+
+_REV_KW = [r"\bPNB\b", r"produit net bancaire", r"chiffre d'affaires", r"\bCA\b", r"\bventes\b"]
+_RN_KW = [r"résultat net", r"\bRN\b", r"perte(?:\s+nette)?", r"bénéfice net"]
+
+
+def _interim_pub_date(sent):
+    """Date de publication d'un rapport intermédiaire, tous formats confondus."""
+    for pat in (r'(?:publié|daté|arrêté)\s+(?:le|du|au)\s*(\d{1,2}/\d{1,2}/\d{4})',
+                r'\((\d{1,2}/\d{1,2}/\d{4})\)',
+                r'(\d{1,2}/\d{1,2}/\d{4})',
+                r'(?:publié|daté)\s+(?:en|de)\s+([A-Za-zûôéèà]+\s+\d{4})',
+                r'(?:publié|daté)\s+(?:en|de)\s+(\d{4})',
+                r'\bde\s+([A-Za-zûôéèà]+\s+\d{4})'):
+        m = re.search(pat, sent, re.I)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _interim_metric(sent, keywords):
+    """Extrait un indicateur (montant et/ou variation) autour d'un mot-clé, quel que
+    soit l'ordre (« PNB de 30,8 Mds (+3,7%) » ou « RN en hausse de +48% à 8 Mds »).
+    Gère les pertes (signe négatif) et infère le signe depuis le contexte."""
+    pos = None
+    end = 0
+    for kw in keywords:
+        m = re.search(kw, sent, re.I)
+        if m and (pos is None or m.start() < pos):
+            pos, end = m.start(), m.end()
+    if pos is None:
+        return None
+    win = sent[pos:pos + 120]
+    rel_end = end - pos
+    for other in (r"résultat net", r"\bRN\b", r"\bPNB\b", r"chiffre d'affaires",
+                  r"\bCA\b", r"perte", r"bénéfice"):
+        m = re.search(other, win[rel_end:], re.I)
+        if m:
+            win = win[:rel_end + m.start()]
+    amt = re.search(r'([+\-]?\d[\d\s.,]*?)\s*(milliards?|millions?|Mds|M)\b', win, re.I)
+    pct = re.search(r'([+\-]?\d+(?:[.,]\d+)?)\s*%', win)
+    parts = []
+    if amt:
+        parts.append(re.sub(r'\s+', ' ', amt.group(1)).strip() + " " + amt.group(2) + " FCFA")
+    if pct:
+        p = pct.group(1).replace(' ', '')
+        if not p.startswith(('+', '-')):
+            neg = re.search(r'baisse|chute|recul|perte|contraction|repli|déclin|diminu', win, re.I)
+            p = ('-' if neg else '+') + p
+        parts.append("(" + p + "%)")
+    return " ".join(parts) if parts else None
+
+
+def _interim_score(sent):
+    """Score d'une phrase candidate : année la plus récente + densité de chiffres/date."""
+    yrs = [int(y) for y in re.findall(r'\b(20\d{2})\b', sent)]
+    year = max(yrs) if yrs else 0
+    has = sum(bool(re.search(p, sent, re.I)) for p in
+              (r'\d+\s*%', r'milliards?|millions?', r'\d{1,2}/\d{1,2}/\d{4}', r'publi|daté'))
+    return (year, has)
+
+
 def _extract_interim_perspectives(source_doc, ticker):
     """Extrait de la section source du ticker : (1) les publications intermédiaires
-    T1 / S1 / T3 (date, CA, résultat net quand présents), (2) le bloc « Perspectives ».
+    T1 / S1 / T3 (date, CA/PNB, résultat net quand présents), (2) le bloc « Perspectives ».
     Best-effort, sans LLM. Retourne {'interim': {t1,s1,t3}, 'perspectives': str|None}."""
     out = {"interim": {"t1": None, "s1": None, "t3": None}, "perspectives": None}
     try:
@@ -3160,34 +3225,52 @@ def _extract_interim_perspectives(source_doc, ticker):
         mp = re.search(r"(?:^|\n)\s*Perspectives\s*:?\s*(.+)", blob, re.I | re.S)
     if mp:
         txt = re.split(r"\n\s*(?:PARTIE\s+\d|#{1,})", mp.group(1))[0]
-        txt = re.sub(r"\s+", " ", txt).strip()
+        txt = _strip_md(re.sub(r"\s+", " ", txt))
         if len(txt) >= 40:
             out["perspectives"] = txt[:800]
 
-    # Interim : phrases mentionnant un rapport T1 / S1 / T3
-    periodes = {
+    # Interim : localiser CHAQUE mention de période et extraire les chiffres à
+    # proximité immédiate (gère une phrase par période OU une phrase combinée
+    # « le T1 … le S1 … le T3 … » sans dupliquer les lignes).
+    markers = {
         "t1": r"\bT1\b|1er\s+trimestre|premier\s+trimestre",
         "s1": r"\bS1\b|1er\s+semestre|premier\s+semestre|semestriel",
         "t3": r"\bT3\b|3e\s+trimestre|troisi[èe]me\s+trimestre|9\s*mois|neuf\s+mois",
     }
-    sentences = re.split(r'(?<=[.!?])\s+', blob)
-    for key, pat in periodes.items():
-        for sent in sentences:
-            if not re.search(pat, sent):
-                continue
-            if not re.search(r"rapport|résultat|chiffre\s+d'affaires|\bCA\b|publi", sent, re.I):
-                continue
-            info = {"commentaire": re.sub(r"\s+", " ", sent).strip()[:240]}
-            m = re.search(r"publi[ée]\s+en\s+([A-Za-zûôéèà]+\s+\d{4})", sent, re.I)
-            if m: info["publication"] = m.group(1)
-            m = re.search(r"chiffre\s+d'affaires\s+de\s+([\d\s.,]+?\s*(?:milliards?|Mds|millions?)\s*FCFA)\s*\(([+\-]?\d+[.,]?\d*\s*%)\)", sent, re.I)
-            if m: info["ca"] = re.sub(r"\s+", " ", m.group(1)).strip() + f" ({m.group(2).replace(' ', '')})"
-            m = re.search(r"résultat\s+net\s+de\s+([\d\s.,]+?\s*(?:milliards?|Mds|millions?)\s*FCFA)\s*\(([+\-]?\d+[.,]?\d*\s*%)\)", sent, re.I)
-            if m: info["rn"] = re.sub(r"\s+", " ", m.group(1)).strip() + f" ({m.group(2).replace(' ', '')})"
-            out["interim"][key] = info
-            break
-    return out
+    marks = []
+    for k, pat in markers.items():
+        for m in re.finditer(pat, blob, re.I):
+            marks.append((m.start(), k))
+    marks.sort()
 
+    for key, pat in markers.items():
+        best_win = None
+        best_score = (-1, -1)
+        for m in re.finditer(pat, blob, re.I):
+            start = m.start()
+            nxt = [p for p, kk in marks if p > start + 1 and kk != key]
+            win_end = min([start + 240] + ([min(nxt)] if nxt else []))
+            win = blob[start:win_end]
+            sc = _interim_score(win)
+            if sc > best_score:
+                best_score, best_win = sc, win
+        if best_win is None:
+            continue
+        if not re.search(r"rapport|publi|\d{1,2}/\d{1,2}/\d{4}|PNB|\bCA\b|résultat|"
+                         r"milliard|million|%", best_win, re.I):
+            continue
+        info = {"commentaire": _strip_md(re.sub(r"\s+", " ", best_win))[:260]}
+        d = _interim_pub_date(best_win)
+        if d:
+            info["publication"] = d
+        rev = _interim_metric(best_win, _REV_KW)
+        if rev:
+            info["ca"] = rev
+        rn = _interim_metric(best_win, _RN_KW)
+        if rn:
+            info["rn"] = rn
+        out["interim"][key] = info
+    return out
 
 def build_resultats_intermediaires(doc, s: dict):
     """Section dédiée aux publications financières intermédiaires (T1, S1, T3),
@@ -3206,7 +3289,7 @@ def build_resultats_intermediaires(doc, s: dict):
 
     tbl = doc.add_table(rows=1, cols=5)
     tbl.style = "Table Grid"
-    for i, h in enumerate(["Période", "Publication", "Chiffre d'affaires",
+    for i, h in enumerate(["Période", "Publication", "CA / PNB",
                            "Résultat net", "Commentaire"]):
         _cw(tbl.rows[0].cells[i], h, bold=True, size=8, bg="1A237E", color="FFFFFF")
 
@@ -3220,7 +3303,7 @@ def build_resultats_intermediaires(doc, s: dict):
                 bg="C6EFCE" if info.get("ca") else "FFFFFF")
             _cw(row.cells[3], info.get("rn", "—"), size=8,
                 bg="C6EFCE" if info.get("rn") else "FFFFFF")
-            _cw(row.cells[4], (info.get("commentaire", "—") or "—")[:200], size=7)
+            _cw(row.cells[4], _strip_md(info.get("commentaire", "—") or "—")[:220], size=7)
         else:
             _cw(row.cells[1], "En attente", size=8, bg="F5F5F5")
             _cw(row.cells[2], "—", size=8, bg="F5F5F5")
