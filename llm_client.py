@@ -109,6 +109,10 @@ def _call_deepseek(prompt: str, max_tokens: int, system: Optional[str]) -> str:
         model=MODELS["deepseek"],
         max_tokens=max_tokens,
         messages=messages,
+        # deepseek-v4-flash active le mode « thinking » PAR DÉFAUT : le raisonnement
+        # consomme le budget max_tokens et `content` revient vide (« réponse vide
+        # (0 caractère) » observé le 28/09/2026). On le désactive, comme pour Gemini.
+        extra_body={"thinking": {"type": "disabled"}},
     )
     return resp.choices[0].message.content.strip()
 
