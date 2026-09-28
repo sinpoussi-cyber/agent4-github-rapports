@@ -374,7 +374,7 @@ def extract_market_data(sections_data: dict) -> dict:
         "composite": "—",
         "var_composite": "—",
         "capitalisation": "—",
-        "nb_societes": "47",
+        "nb_societes": "48",  # valeur par défaut (48 depuis l'admission de BBGC) ; remplacée par celle du rapport source
         "date": "—",
     }
 
@@ -384,6 +384,7 @@ def extract_market_data(sections_data: dict) -> dict:
     rx_capi = re.compile(r'capitalisation[^0-9]*([0-9\s,\.]+)\s*(Mds|milliards|Md)', re.IGNORECASE)
     rx_nb = re.compile(r'([0-9]+)\s*soci[eé]t[eé]', re.IGNORECASE)
 
+    nb_trouve = False
     for el in synth_elems:
         t = _dedup(_para_text(el).strip())
         m = rx_composite.search(t)
@@ -396,8 +397,9 @@ def extract_market_data(sections_data: dict) -> dict:
         if mc and data["capitalisation"] == "—":
             data["capitalisation"] = f"{mc.group(1).strip()} {mc.group(2)}"
         mn = rx_nb.search(t)
-        if mn and data["nb_societes"] == "47":
+        if mn and not nb_trouve:
             data["nb_societes"] = mn.group(1)
+            nb_trouve = True
 
     return data
 
