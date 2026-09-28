@@ -116,6 +116,71 @@ def get_year_word_reports(year=None, repo_name=None, token=None):
     return reports
 
 
+# Préfixe des artefacts publiés par brvm-analysis-suite
+# (step « Upload Rapport » : name: rapport-brvm-${{ github.run_number }}).
+ARTIFACT_PREFIX = os.getenv("GH_ARTIFACT_PREFIX", "rapport-brvm-")
+MAX_ARTIFACTS_SCAN = int(os.getenv("GH_MAX_ARTIFACTS_SCAN", "100"))
+
+
+def _parse_gh_date(value):
+    from datetime import datetime
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _latest_reports_via_artifacts(repo_name, token, n, name_filter=None):
+    """Sélection par l'API des ARTEFACTS, triés par date de création réelle.
+
+    Pourquoi : l'ancienne méthode prenait les premiers runs « success » dans
+    l'ordre renvoyé par l'API des workflow runs, sans contrôle de date. Le
+    28/09/2026, elle a ainsi renvoyé les runs #413/#412 (5 et 4 sept.) au lieu
+    du run #438 du jour. Ici on ne dépend ni de cet ordre ni du statut du run :
+    un artefact rapport-brvm-* n'existe que si le rapport Word a été produit.
+    """
+    headers = {"Authorization": f"token {token}",
+               "Accept": "application/vnd.github+json"}
+    url = f"https://api.github.com/repos/{repo_name}/actions/artifacts"
+    candidats, page = [], 1
+    while len(candidats) < MAX_ARTIFACTS_SCAN and page <= 5:
+        r = requests.get(url, headers=headers, timeout=30,
+                         params={"per_page": 100, "page": page})
+        r.raise_for_status()
+        items = r.json().get("artifacts", [])
+        if not items:
+            break
+        for a in items:
+            if a.get("expired") or not str(a.get("name", "")).startswith(ARTIFACT_PREFIX):
+                continue
+            candidats.append(a)
+        page += 1
+
+    # Du plus récent au plus ancien, selon la date réelle de l'artefact
+    candidats.sort(key=lambda a: _parse_gh_date(a["created_at"]), reverse=True)
+
+    reports = []
+    for a in candidats:
+        if len(reports) >= n:
+            break
+        try:
+            resp = requests.get(a["archive_download_url"], headers=headers, timeout=60)
+            resp.raise_for_status()
+            suffixe = a["name"][len(ARTIFACT_PREFIX):]
+            run_number = int(suffixe) if suffixe.isdigit() else None
+            date_run = _parse_gh_date(a["created_at"])
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                for name in zf.namelist():
+                    base = os.path.basename(name)
+                    if not name.endswith(".docx") or (name_filter and name_filter not in base):
+                        continue
+                    reports.append({"nom": base, "contenu_bytes": zf.read(name),
+                                    "date_run": date_run, "run_number": run_number})
+                    print(f"Extrait : {base} (artefact {a['name']}, {date_run})")
+        except Exception as e:
+            print(f"Erreur artefact {a.get('name')}: {e}")
+
+    reports.sort(key=lambda r: r["date_run"], reverse=True)
+    return reports[:n]
+
+
 def get_latest_word_reports(repo_name=None, token=None, n=2,
                             name_filter=None, max_runs_scan=None):
     """
@@ -137,6 +202,17 @@ def get_latest_word_reports(repo_name=None, token=None, n=2,
     if not _repo_name:
         raise ValueError("GH_REPO manquant (paramètre ou .env)")
 
+    # 1) Méthode principale : artefacts triés par date réelle
+    try:
+        reports = _latest_reports_via_artifacts(_repo_name, _token, n, name_filter)
+        if len(reports) >= n:
+            print(f"{len(reports)} rapport(s) le(s) plus récent(s) via l'API des artefacts.")
+            return reports
+        print(f"API artefacts : {len(reports)} rapport(s) seulement — repli sur le parcours des runs.")
+    except Exception as e:
+        print(f"API artefacts indisponible ({e}) — repli sur le parcours des runs.")
+
+    # 2) Repli : ancienne méthode (runs « success »)
     headers = {"Authorization": f"token {_token}"}
     reports = []
 
