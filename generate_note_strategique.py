@@ -1406,6 +1406,7 @@ _BRVM_SECTOR_TICKERS = {
         ("BOAM", "BOA Mali"), ("BOAN", "BOA Niger"), ("BOAS", "BOA Sénégal"),
         ("SGBC", "SGBCI"), ("BICB", "BICI Bénin"), ("BICC", "BICI CI"),
         ("NSBC", "NSIA Banque CI"), ("SIBC", "SIB"), ("CBIBF", "Coris Bank Burkina"),
+        ("BBGC", "Bridge Bank Group CI"),
     ]),
     "agricole": ("Agroalimentaire", [
         ("SOGC", "SOGB"), ("SPHC", "SAPH"), ("PALC", "PALMCI"),
@@ -1428,7 +1429,7 @@ _SECTOR_KEYWORDS = {
     "bancaire": (
         "banque", "bancaire", "crédit", "bceao", "monétaire", "taux directeur",
         "refinancement", "liquidité bancaire", "boa ", "sgbci", "bici", "nsia",
-        "coris", "ecobank", "sib ",
+        "coris", "ecobank", "sib ", "bridge bank",
     ),
     "agricole": (
         "agricole", "agriculture", "cacao", "café", "coton", "hévéa", "caoutchouc",
